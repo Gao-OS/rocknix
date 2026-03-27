@@ -1,0 +1,12 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 GaoOS (https://gaoos.dev)
+#
+# system-upgrade — ES integration wrapper for gaoos-update canary
+# Replaces upstream's system-upgrade script.
+# Called by rocknix-config update command.
+#
+# Runs the full canary flow: check → download → verify → apply
+# Does NOT reboot — the user must trigger reboot from the ES menu.
+
+exec gaoos-update canary

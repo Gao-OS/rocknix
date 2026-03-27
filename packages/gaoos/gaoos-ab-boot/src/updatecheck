@@ -1,0 +1,23 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 GaoOS (https://gaoos.dev)
+#
+# updatecheck — ES integration wrapper for gaoos-update check
+# Replaces upstream's updatecheck script.
+# Called by rocknix-config canupdate command.
+
+case "${1}" in
+  canupdate)
+    result=$(gaoos-update check 2>/dev/null)
+    if [ -n "${result}" ] && [ "${result}" != "no" ]; then
+      echo "${result}"
+      exit 0
+    else
+      echo "no"
+      exit 0
+    fi
+    ;;
+  *)
+    gaoos-update check
+    ;;
+esac

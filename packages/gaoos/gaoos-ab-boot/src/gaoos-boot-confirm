@@ -1,0 +1,107 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 GaoOS (https://gaoos.dev)
+#
+# gaoos-boot-confirm — Auto-confirms a healthy boot
+# Run by gaoos-boot-confirm.service after multi-user.target.
+# Waits 30 seconds, runs health checks, marks slot good on success.
+# FR4.1-FR4.5
+
+set -euo pipefail
+
+AB_STATE="/flash/ab_state.env"
+LOG="/var/log/gaoos-boot-confirm.log"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "${LOG}"; }
+
+# Read current slot state
+get_running_slot() {
+  sed -n 's/.*gaoos\.slot=\([ab]\).*/\1/p' /proc/cmdline 2>/dev/null || echo "a"
+}
+
+read_ab_state() {
+  active_slot="a"
+  status_a="good"
+  status_b=""
+  retry_a="0"
+  retry_b="0"
+  max_retries="3"
+  [ -f "${AB_STATE}" ] && . "${AB_STATE}"
+}
+
+write_ab_state() {
+  local was_ro=0
+  if grep -q '/flash.*ro[,[:space:]]' /proc/mounts 2>/dev/null; then
+    mount -o remount,rw /flash 2>/dev/null && was_ro=1
+  fi
+  cat > "${AB_STATE}" <<EOF
+active_slot=${active_slot}
+status_a=${status_a}
+status_b=${status_b}
+retry_a=${retry_a}
+retry_b=${retry_b}
+max_retries=${max_retries}
+EOF
+  sync
+  [ "${was_ro}" = "1" ] && mount -o remount,ro /flash 2>/dev/null || true
+}
+
+# Wait for system to stabilize (FR4.2)
+log "Waiting 30 seconds for system stabilization..."
+sleep 30
+
+running=$(get_running_slot)
+read_ab_state
+
+# Check if current slot is pending (needs confirmation)
+current_status=""
+if [ "${running}" = "a" ]; then
+  current_status="${status_a}"
+else
+  current_status="${status_b}"
+fi
+
+if [ "${current_status}" = "good" ]; then
+  log "Slot ${running} already confirmed good. Nothing to do."
+  exit 0
+fi
+
+if [ "${current_status}" != "pending" ]; then
+  log "Slot ${running} status is '${current_status}', not pending. Skipping confirmation."
+  exit 0
+fi
+
+# Run health checks (FR4.3)
+log "Running health checks on slot ${running}..."
+
+health_ok=true
+
+# Check a: storage partition is mounted
+if ! mountpoint -q /storage 2>/dev/null; then
+  log "FAIL: /storage is not mounted"
+  health_ok=false
+fi
+
+# Check b: uptime is at least 10 seconds
+uptime_seconds=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo "0")
+if [ "${uptime_seconds}" -lt 10 ]; then
+  log "FAIL: System uptime ${uptime_seconds}s is less than 10s"
+  health_ok=false
+fi
+
+# Confirm or leave pending
+if [ "${health_ok}" = "true" ]; then
+  log "All health checks passed. Confirming slot ${running} as good."
+  if [ "${running}" = "a" ]; then
+    status_a="good"
+    retry_a="0"
+  else
+    status_b="good"
+    retry_b="0"
+  fi
+  write_ab_state
+  log "Slot ${running} confirmed good."
+else
+  log "Health checks failed. Slot ${running} remains pending."
+  log "Will retry on next boot. After ${max_retries} failures, auto-rollback triggers."
+fi

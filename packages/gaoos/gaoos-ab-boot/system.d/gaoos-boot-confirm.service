@@ -1,0 +1,12 @@
+[Unit]
+Description=GaoOS A/B Boot Confirmation
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/gaoos-boot-confirm
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

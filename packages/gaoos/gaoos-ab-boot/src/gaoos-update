@@ -1,0 +1,496 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 GaoOS (https://gaoos.dev)
+#
+# gaoos-update — A/B slot update manager for GaoOS
+#
+# Commands:
+#   status    — Show slot status
+#   check     — Check for available updates
+#   download  — Download update image
+#   apply     — Write image to inactive slot
+#   canary    — Download + verify + apply (no reboot)
+#   rollback  — Switch active slot to the other slot
+#   confirm   — Mark current slot as good
+
+set -euo pipefail
+
+# Paths
+AB_STATE="/flash/ab_state.env"
+GAOOS_CONF="/storage/.config/gaoos-ab.conf"
+GAOOS_CONF_DEFAULT="/usr/share/gaoos/gaoos-ab.conf.default"
+DEVICE_FILE="/etc/gaoos-device"
+VERSION_FILE="/etc/gaoos-version"
+STAGING_DIR="/storage/.update"
+PROGRESS_FILE="/tmp/gaoos-update-progress"
+
+# Defaults
+MAX_RETRIES=3
+
+# ──────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────
+
+log() { echo "[gaoos-update] $*"; }
+err() { echo "[gaoos-update] ERROR: $*" >&2; }
+die() { err "$@"; exit 1; }
+
+progress() {
+  local pct="$1" msg="$2"
+  echo "${pct} ${msg}" > "${PROGRESS_FILE}" 2>/dev/null || true
+  echo "[${pct}%] ${msg}"
+}
+
+load_config() {
+  # Ensure config exists
+  if [ ! -f "${GAOOS_CONF}" ]; then
+    if [ -f "${GAOOS_CONF_DEFAULT}" ]; then
+      mkdir -p "$(dirname "${GAOOS_CONF}")"
+      cp "${GAOOS_CONF_DEFAULT}" "${GAOOS_CONF}"
+    fi
+  fi
+  [ -f "${GAOOS_CONF}" ] && . "${GAOOS_CONF}"
+}
+
+get_device() {
+  if [ -f "${DEVICE_FILE}" ]; then
+    cat "${DEVICE_FILE}"
+  else
+    # Fallback: try to get from os-release
+    [ -f /etc/os-release ] && . /etc/os-release
+    echo "${HW_DEVICE:-unknown}"
+  fi
+}
+
+get_version() {
+  if [ -f "${VERSION_FILE}" ]; then
+    cat "${VERSION_FILE}"
+  else
+    [ -f /etc/os-release ] && . /etc/os-release
+    echo "${VERSION:-unknown}"
+  fi
+}
+
+get_running_slot() {
+  local slot
+  slot=$(sed -n 's/.*gaoos\.slot=\([ab]\).*/\1/p' /proc/cmdline 2>/dev/null)
+  if [ -z "${slot}" ]; then
+    # Fallback: if no gaoos.slot= on cmdline, assume slot a
+    slot="a"
+  fi
+  echo "${slot}"
+}
+
+get_inactive_slot() {
+  local running
+  running=$(get_running_slot)
+  if [ "${running}" = "a" ]; then
+    echo "b"
+  else
+    echo "a"
+  fi
+}
+
+# ──────────────────────────────────────────────────────────────
+# A/B State Management
+# ──────────────────────────────────────────────────────────────
+
+read_ab_state() {
+  # Defaults
+  active_slot="a"
+  status_a="good"
+  status_b=""
+  retry_a="0"
+  retry_b="0"
+  max_retries="${MAX_RETRIES}"
+
+  if [ -f "${AB_STATE}" ]; then
+    . "${AB_STATE}"
+  fi
+}
+
+write_ab_state() {
+  # Mount boot partition RW if needed
+  local was_ro=0
+  if grep -q '/flash.*ro[,[:space:]]' /proc/mounts 2>/dev/null; then
+    mount -o remount,rw /flash 2>/dev/null && was_ro=1
+  fi
+
+  cat > "${AB_STATE}" <<EOF
+active_slot=${active_slot}
+status_a=${status_a}
+status_b=${status_b}
+retry_a=${retry_a}
+retry_b=${retry_b}
+max_retries=${max_retries}
+EOF
+  sync
+
+  # Restore RO if it was RO
+  if [ "${was_ro}" = "1" ]; then
+    mount -o remount,ro /flash 2>/dev/null || true
+  fi
+}
+
+# ──────────────────────────────────────────────────────────────
+# Commands
+# ──────────────────────────────────────────────────────────────
+
+cmd_status() {
+  read_ab_state
+  local running
+  running=$(get_running_slot)
+  local inactive
+  inactive=$(get_inactive_slot)
+  local device
+  device=$(get_device)
+  local version
+  version=$(get_version)
+
+  echo "GaoOS A/B Boot Status"
+  echo "====================="
+  echo "Device:       ${device}"
+  echo "Version:      ${version}"
+  echo "Running slot: ${running}"
+  echo "Active slot:  ${active_slot}"
+  echo ""
+  echo "Slot A:"
+  echo "  Status:  ${status_a:-empty}"
+  echo "  Retries: ${retry_a}"
+  echo ""
+  echo "Slot B:"
+  echo "  Status:  ${status_b:-empty}"
+  echo "  Retries: ${retry_b}"
+  echo ""
+
+  # Check for staged update
+  if ls "${STAGING_DIR}"/*.squashfs 2>/dev/null | head -1 >/dev/null 2>&1; then
+    echo "Staged update: YES (in ${STAGING_DIR})"
+  else
+    echo "Staged update: none"
+  fi
+}
+
+cmd_check() {
+  load_config
+  local device
+  device=$(get_device)
+  local current_version
+  current_version=$(get_version)
+
+  # Build manifest URL
+  local manifest_url="${UPDATE_MANIFEST_URL:-https://github.com/Gao-OS/rocknix/releases/latest/download/manifest-\${DEVICE}.json}"
+  manifest_url="${manifest_url//\$\{DEVICE\}/${device}}"
+  manifest_url="${manifest_url//\$DEVICE/${device}}"
+
+  log "Checking for updates at: ${manifest_url}"
+
+  local manifest
+  manifest=$(curl -sfL --connect-timeout 10 --max-time 30 "${manifest_url}" 2>/dev/null) || {
+    err "Failed to fetch update manifest"
+    echo "no"
+    return 1
+  }
+
+  # Parse JSON (minimal — no jq dependency guaranteed)
+  local remote_version
+  remote_version=$(echo "${manifest}" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  local remote_url
+  remote_url=$(echo "${manifest}" | sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  local remote_sha256
+  remote_sha256=$(echo "${manifest}" | sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  local remote_size
+  remote_size=$(echo "${manifest}" | sed -n 's/.*"size_bytes"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+  local min_version
+  min_version=$(echo "${manifest}" | sed -n 's/.*"min_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  local changelog_url
+  changelog_url=$(echo "${manifest}" | sed -n 's/.*"changelog_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+  if [ -z "${remote_version}" ]; then
+    err "Invalid manifest: no version field"
+    echo "no"
+    return 1
+  fi
+
+  # Check min_version constraint
+  if [ -n "${min_version}" ] && [ "${current_version}" \< "${min_version}" ]; then
+    err "Running version ${current_version} is older than minimum required ${min_version}"
+    err "A fresh flash may be required. Cannot apply this update."
+    echo "no"
+    return 1
+  fi
+
+  # Compare versions
+  if [ "${remote_version}" = "${current_version}" ]; then
+    log "Already running latest version: ${current_version}"
+    echo "no"
+    return 0
+  fi
+
+  echo "${remote_version}"
+  log "Update available: ${current_version} → ${remote_version}"
+  [ -n "${changelog_url}" ] && log "Changelog: ${changelog_url}"
+
+  # Save manifest info for download/apply
+  mkdir -p "${STAGING_DIR}"
+  cat > "${STAGING_DIR}/manifest.json" <<EOF
+{"version":"${remote_version}","url":"${remote_url}","sha256":"${remote_sha256}","size_bytes":${remote_size:-0},"changelog_url":"${changelog_url}"}
+EOF
+  return 0
+}
+
+cmd_download() {
+  local image_url="$1"
+  local sha256="${2:-}"
+
+  # If no URL given, try to read from saved manifest
+  if [ -z "${image_url}" ] && [ -f "${STAGING_DIR}/manifest.json" ]; then
+    image_url=$(sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
+    sha256=$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
+  fi
+
+  [ -z "${image_url}" ] && die "No image URL specified. Run 'gaoos-update check' first or provide a URL."
+
+  mkdir -p "${STAGING_DIR}"
+  local filename
+  filename=$(basename "${image_url}")
+  local dest="${STAGING_DIR}/${filename}"
+
+  # Check disk space (need at least 1GB free)
+  local free_kb
+  free_kb=$(df /storage 2>/dev/null | tail -1 | awk '{print $4}')
+  if [ "${free_kb:-0}" -lt 1048576 ]; then
+    die "Insufficient disk space. Need at least 1GB free on /storage."
+  fi
+
+  log "Downloading: ${image_url}"
+  progress 0 "Starting download..."
+
+  curl -fL --connect-timeout 15 --max-time 1800 \
+    --progress-bar \
+    -o "${dest}" \
+    "${image_url}" 2>&1 | while IFS= read -r line; do
+      # Extract percentage from curl progress
+      local pct
+      pct=$(echo "${line}" | sed -n 's/.*\([0-9]\{1,3\}\)\.[0-9]%.*/\1/p' | tail -1)
+      [ -n "${pct}" ] && progress "${pct}" "Downloading..."
+    done
+
+  if [ ! -f "${dest}" ]; then
+    die "Download failed"
+  fi
+
+  progress 100 "Download complete"
+
+  # Verify checksum if available
+  if [ -n "${sha256}" ]; then
+    log "Verifying checksum..."
+    progress 0 "Verifying checksum..."
+    local actual
+    actual=$(sha256sum "${dest}" | awk '{print $1}')
+    if [ "${actual}" != "${sha256}" ]; then
+      rm -f "${dest}"
+      die "Checksum mismatch! Expected: ${sha256}, Got: ${actual}"
+    fi
+    log "Checksum verified OK"
+    progress 100 "Checksum verified"
+  fi
+
+  # Save sha256 for apply verification
+  if [ -n "${sha256}" ]; then
+    echo "${sha256}  ${dest}" > "${dest}.sha256"
+  fi
+
+  echo "${dest}"
+}
+
+cmd_apply() {
+  local image="$1"
+
+  [ -z "${image}" ] && die "Usage: gaoos-update apply <image>"
+  [ -f "${image}" ] || die "Image not found: ${image}"
+
+  # Validate SquashFS
+  if command -v unsquashfs >/dev/null 2>&1; then
+    log "Validating SquashFS image..."
+    if ! unsquashfs -s "${image}" >/dev/null 2>&1; then
+      die "Invalid SquashFS image: ${image}"
+    fi
+    log "SquashFS validation passed"
+  fi
+
+  read_ab_state
+  local inactive
+  inactive=$(get_inactive_slot)
+  local running
+  running=$(get_running_slot)
+
+  # Determine target partition
+  local target_part
+  if [ "${inactive}" = "a" ]; then
+    target_part="/dev/mmcblk0p2"
+  else
+    target_part="/dev/mmcblk0p3"
+  fi
+
+  # Verify target partition exists
+  [ -b "${target_part}" ] || die "Target partition ${target_part} not found"
+
+  log "Writing image to slot ${inactive} (${target_part})..."
+  log "Active/running slot ${running} will NOT be modified."
+  progress 0 "Writing to slot ${inactive}..."
+
+  local image_size
+  image_size=$(stat -c %s "${image}")
+
+  # Write image to partition with progress
+  dd if="${image}" of="${target_part}" bs=4M conv=fsync status=progress 2>&1 | while IFS= read -r line; do
+    local bytes
+    bytes=$(echo "${line}" | sed -n 's/^\([0-9]*\) bytes.*/\1/p')
+    if [ -n "${bytes}" ] && [ "${image_size}" -gt 0 ]; then
+      local pct=$(( bytes * 100 / image_size ))
+      progress "${pct}" "Writing to slot ${inactive}..."
+    fi
+  done
+  sync
+
+  progress 100 "Write complete"
+
+  # Verify written data
+  log "Verifying written data..."
+  progress 0 "Verifying write..."
+  local src_hash
+  src_hash=$(sha256sum "${image}" | awk '{print $1}')
+  local written_hash
+  written_hash=$(dd if="${target_part}" bs=4M count=$(( (image_size + 4194303) / 4194304 )) 2>/dev/null | head -c "${image_size}" | sha256sum | awk '{print $1}')
+
+  if [ "${src_hash}" != "${written_hash}" ]; then
+    die "Write verification failed! Slot ${inactive} may be corrupt but running slot is safe."
+  fi
+  log "Write verification passed"
+  progress 100 "Verification complete"
+
+  # Update A/B state
+  if [ "${inactive}" = "a" ]; then
+    status_a="pending"
+    retry_a="0"
+  else
+    status_b="pending"
+    retry_b="0"
+  fi
+  active_slot="${inactive}"
+  write_ab_state
+
+  log "Slot ${inactive} marked as pending. Active slot set to ${inactive}."
+  log "Reboot to boot into the new system. It will auto-confirm after health checks pass."
+  log "NOTE: Reboot is NOT automatic. Run 'reboot' when ready."
+}
+
+cmd_rollback() {
+  read_ab_state
+  local running
+  running=$(get_running_slot)
+  local other
+  other=$(get_inactive_slot)
+
+  # Check other slot status
+  local other_status
+  if [ "${other}" = "a" ]; then
+    other_status="${status_a}"
+  else
+    other_status="${status_b}"
+  fi
+
+  if [ "${other_status}" = "bad" ]; then
+    die "Cannot rollback: slot ${other} is marked as 'bad'"
+  fi
+
+  if [ -z "${other_status}" ]; then
+    die "Cannot rollback: slot ${other} is empty (never written)"
+  fi
+
+  active_slot="${other}"
+  write_ab_state
+
+  log "Active slot switched to ${other}."
+  log "Reboot to complete rollback. Run 'reboot' when ready."
+}
+
+cmd_confirm() {
+  read_ab_state
+  local running
+  running=$(get_running_slot)
+
+  if [ "${running}" = "a" ]; then
+    status_a="good"
+    retry_a="0"
+  else
+    status_b="good"
+    retry_b="0"
+  fi
+  write_ab_state
+
+  log "Slot ${running} confirmed as good."
+}
+
+cmd_canary() {
+  log "Starting canary update (download + verify + apply, no reboot)..."
+
+  # Step 1: Check
+  local version
+  version=$(cmd_check)
+  if [ "${version}" = "no" ] || [ -z "${version}" ]; then
+    log "No update available."
+    return 0
+  fi
+
+  # Step 2: Download
+  local image_path
+  image_path=$(cmd_download "" "")
+
+  # Step 3: Apply
+  cmd_apply "${image_path}"
+
+  log "Canary complete. System is staged on inactive slot."
+  log "Run 'reboot' when ready to switch."
+}
+
+# ──────────────────────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────────────────────
+
+usage() {
+  echo "Usage: gaoos-update <command> [args]"
+  echo ""
+  echo "Commands:"
+  echo "  status              Show A/B slot status"
+  echo "  check               Check for available updates"
+  echo "  download [url]      Download update image"
+  echo "  apply <image>       Write image to inactive slot"
+  echo "  canary              Download, verify, and apply (no reboot)"
+  echo "  rollback            Switch to other slot"
+  echo "  confirm             Mark running slot as good"
+  echo ""
+  echo "The active slot is NEVER modified. Updates always write to the inactive slot."
+}
+
+cmd="${1:-}"
+shift || true
+
+case "${cmd}" in
+  status)   cmd_status ;;
+  check)    cmd_check ;;
+  download) cmd_download "${1:-}" "${2:-}" ;;
+  apply)    cmd_apply "${1:-}" ;;
+  canary)   cmd_canary ;;
+  rollback) cmd_rollback ;;
+  confirm)  cmd_confirm ;;
+  -h|--help|help|"")
+    usage
+    ;;
+  *)
+    err "Unknown command: ${cmd}"
+    usage
+    exit 1
+    ;;
+esac

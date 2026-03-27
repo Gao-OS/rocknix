@@ -1,0 +1,5 @@
+# GaoOS A/B Boot Configuration
+# Copy to /storage/.config/gaoos-ab.conf to customize.
+
+# Update manifest URL pattern. ${DEVICE} is replaced with the device identifier.
+UPDATE_MANIFEST_URL="https://github.com/Gao-OS/rocknix/releases/latest/download/manifest-\${DEVICE}.json"

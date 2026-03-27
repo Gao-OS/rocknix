@@ -1,0 +1,26 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 GaoOS (https://gaoos.dev)
+#
+# rocknix-update — Replacement shim for GaoOS A/B boot system
+# Prevents the old ROCKNIX tar-based update flow from running.
+# Redirects all update operations to gaoos-update.
+#
+# FR9.1: Users MUST NOT see two competing update mechanisms.
+# FR9.3: Old /storage/.update/*.tar flow MUST be disabled.
+
+echo "[GaoOS] The ROCKNIX in-place update system has been replaced by GaoOS A/B boot."
+echo "[GaoOS] Use 'gaoos-update' instead."
+echo ""
+
+case "${1}" in
+  check)
+    exec gaoos-update check
+    ;;
+  releases)
+    echo "Use 'gaoos-update check' to see available updates."
+    ;;
+  *)
+    exec gaoos-update "$@"
+    ;;
+esac
