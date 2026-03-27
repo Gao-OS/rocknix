@@ -48,3 +48,7 @@ projects/**/*.old
 /.env
 /.es_cache
 /.config
+
+# devenv / direnv
+/.devenv*
+/.direnv

@@ -12,6 +12,13 @@ for atomic, rollback-safe OTA updates.
 **Fork**: Gao-OS/rocknix
 **Organization**: github.com/Gao-OS
 
+## Development Environment
+
+```bash
+devenv shell    # enter dev shell with all build deps (requires devenv + nix)
+direnv allow    # or use direnv for automatic activation
+```
+
 ## Build Commands
 
 Full distro build for a device (first build ~10 hours, subsequent minutes via cache):
