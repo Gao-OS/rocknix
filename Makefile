@@ -1,4 +1,4 @@
--include $(HOME)/.ROCKNIX/options
+-include $(HOME)/.GaoOS/options
 
 all: world
 
@@ -36,60 +36,60 @@ kconfig-menuconfig-%:
 
 RK3588:
 	unset DEVICE_ROOT
-	PROJECT=ROCKNIX DEVICE=RK3588 ARCH=arm ./scripts/build_distro
-	PROJECT=ROCKNIX DEVICE=RK3588 ARCH=aarch64 ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=RK3588 ARCH=arm ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=RK3588 ARCH=aarch64 ./scripts/build_distro
 
 S922X:
 	unset DEVICE_ROOT
-	PROJECT=ROCKNIX DEVICE=S922X ARCH=arm ./scripts/build_distro
-	PROJECT=ROCKNIX DEVICE=S922X ARCH=aarch64 ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=S922X ARCH=arm ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=S922X ARCH=aarch64 ./scripts/build_distro
 
 RK3566:
 	unset DEVICE_ROOT
-	DEVICE_ROOT=RK3566 PROJECT=ROCKNIX DEVICE=RK3566 ARCH=arm ./scripts/build_distro
-	DEVICE_ROOT=RK3566 PROJECT=ROCKNIX DEVICE=RK3566 ARCH=aarch64 ./scripts/build_distro
+	DEVICE_ROOT=RK3566 DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=RK3566 ARCH=arm ./scripts/build_distro
+	DEVICE_ROOT=RK3566 DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=RK3566 ARCH=aarch64 ./scripts/build_distro
 
 RK3326:
 	unset DEVICE_ROOT
-	PROJECT=ROCKNIX DEVICE=RK3326 ARCH=arm ./scripts/build_distro
-	PROJECT=ROCKNIX DEVICE=RK3326 ARCH=aarch64 ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=RK3326 ARCH=arm ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=RK3326 ARCH=aarch64 ./scripts/build_distro
 
 RK3399:
 	unset DEVICE_ROOT
-	PROJECT=ROCKNIX DEVICE=RK3399 ARCH=arm ./scripts/build_distro
-	PROJECT=ROCKNIX DEVICE=RK3399 ARCH=aarch64 ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=RK3399 ARCH=arm ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=RK3399 ARCH=aarch64 ./scripts/build_distro
 
 H700:
 	unset DEVICE_ROOT
-	PROJECT=ROCKNIX DEVICE=H700 ARCH=arm ./scripts/build_distro
-	PROJECT=ROCKNIX DEVICE=H700 ARCH=aarch64 ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=H700 ARCH=arm ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=H700 ARCH=aarch64 ./scripts/build_distro
 
 SDM845:
 	unset DEVICE_ROOT
-	PROJECT=ROCKNIX DEVICE=SDM845 ARCH=arm ./scripts/build_distro
-	PROJECT=ROCKNIX DEVICE=SDM845 ARCH=aarch64 ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=SDM845 ARCH=arm ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=SDM845 ARCH=aarch64 ./scripts/build_distro
 
 SM6115:
 	unset DEVICE_ROOT
-	PROJECT=ROCKNIX DEVICE=SM6115 ARCH=arm ./scripts/build_distro
-	PROJECT=ROCKNIX DEVICE=SM6115 ARCH=aarch64 ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=SM6115 ARCH=arm ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=SM6115 ARCH=aarch64 ./scripts/build_distro
 
 SM8250:
 	unset DEVICE_ROOT
-	PROJECT=ROCKNIX DEVICE=SM8250 ARCH=arm ./scripts/build_distro
-	PROJECT=ROCKNIX DEVICE=SM8250 ARCH=aarch64 ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=SM8250 ARCH=arm ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=SM8250 ARCH=aarch64 ./scripts/build_distro
 
 SM8550:
 	unset DEVICE_ROOT
-	PROJECT=ROCKNIX DEVICE=SM8550 ARCH=arm ./scripts/build_distro
-	PROJECT=ROCKNIX DEVICE=SM8550 ARCH=aarch64 ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=SM8550 ARCH=arm ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=SM8550 ARCH=aarch64 ./scripts/build_distro
 
 SM8650:
 	unset DEVICE_ROOT
-	PROJECT=ROCKNIX DEVICE=SM8650 ARCH=aarch64 ./scripts/build_distro
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=SM8650 ARCH=aarch64 ./scripts/build_distro
 
 update:
-	PROJECT=ROCKNIX DEVICE=RK3588 ARCH=aarch64 ./scripts/update_packages
+	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=RK3588 ARCH=aarch64 ./scripts/update_packages
 
 package:
 	./scripts/build ${PACKAGE}
@@ -102,14 +102,14 @@ package-clean:
 # For example: make docker-SM8250 will use docker to call: make SM8250
 # All variables are scoped to docker-* commands to prevent weird collisions/behavior with non-docker commands
 
-docker-%: DOCKER_IMAGE := "ghcr.io/rocknix/rocknix-build:latest"
+docker-%: DOCKER_IMAGE := "ghcr.io/gao-os/gaoos-build:latest"
 
 # DOCKER_WORK_DIR is the directory in the Docker image - it is set to /work by default
 #   Anytime this directory changes, you must run `make clean` similarly to moving the distribution directory
 docker-%: DOCKER_WORK_DIR := $(shell if [ -n "${DOCKER_WORK_DIR}" ]; then echo ${DOCKER_WORK_DIR}; else echo "$$(pwd)" ; fi)
 
-# ${HOME}/.ROCKNIX/options is a global options file containing developer and build settings.
-docker-%: GLOBAL_SETTINGS := $(shell if [ -f "${HOME}/.ROCKNIX/options" ]; then echo "-v \"${HOME}/.ROCKNIX/options:${HOME}/.ROCKNIX/options\""; else echo ""; fi)
+# ${HOME}/.GaoOS/options is a global options file containing developer and build settings.
+docker-%: GLOBAL_SETTINGS := $(shell if [ -f "${HOME}/.GaoOS/options" ]; then echo "-v \"${HOME}/.GaoOS/options:${HOME}/.GaoOS/options\""; else echo ""; fi)
 
 # LOCAL_SSH_KEYS_FILE is a variable that contains the location of the authorized keys file for development build use.  It will be mounted into the container if it exists.
 docker-%: LOCAL_SSH_KEYS_FILE := $(shell if [ -n "${LOCAL_SSH_KEYS_FILE}" ]; then echo "-v \"${LOCAL_SSH_KEYS_FILE}:${LOCAL_SSH_KEYS_FILE}\""; else echo ""; fi)

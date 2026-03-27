@@ -127,13 +127,13 @@ if [ -z "$ADDON_URL" ]; then
 fi
 
 # read local persistent options from $ROOT if available
-if [ -f "${ROOT}/.rocknix/options" ]; then
-  . "${ROOT}/.rocknix/options"
+if [ -f "${ROOT}/.gaoos/options" ]; then
+  . "${ROOT}/.gaoos/options"
 fi
 
 # read global persistent options from $HOME if available
-if [ -f "${HOME}/.rocknix/options" ]; then
-  . "${HOME}/.rocknix/options"
+if [ -f "${HOME}/.gaoos/options" ]; then
+  . "${HOME}/.gaoos/options"
 fi
 
 if [ "${LOCAL_CCACHE_SUPPORT}" = "yes" ] && [ -z "${CCACHE_DISABLE}" ]; then
