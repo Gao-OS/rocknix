@@ -8,5 +8,25 @@
 #
 # Runs the full canary flow: check → download → verify → apply
 # Does NOT reboot — the user must trigger reboot from the ES menu.
+#
+# FR9.4: Progress is written to /tmp/gaoos-update-progress in the format:
+#   "<percentage> <message>"
+# EmulationStation or other UI tools can poll this file for live progress.
 
-exec gaoos-update canary
+PROGRESS_FILE="/tmp/gaoos-update-progress"
+
+# Clear stale progress
+rm -f "${PROGRESS_FILE}"
+echo "0 Starting update..." > "${PROGRESS_FILE}"
+
+# Run canary with output visible
+gaoos-update canary
+result=$?
+
+if [ ${result} -eq 0 ]; then
+  echo "100 Update staged successfully. Reboot to apply." > "${PROGRESS_FILE}"
+else
+  echo "-1 Update failed. Check logs for details." > "${PROGRESS_FILE}"
+fi
+
+exit ${result}

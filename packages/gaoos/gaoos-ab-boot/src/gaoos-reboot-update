@@ -1,0 +1,41 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 GaoOS (https://gaoos.dev)
+#
+# gaoos-reboot-update — Reboot into staged A/B update
+# FR9.2: "Reboot to Update" — only after successful stage.
+# Called from EmulationStation System Settings menu.
+
+. /etc/profile 2>/dev/null
+
+# Check if an update has been staged (inactive slot is pending)
+AB_STATE="/flash/ab_state.env"
+if [ ! -f "${AB_STATE}" ]; then
+  echo "No A/B state found. No update staged."
+  exit 1
+fi
+
+. "${AB_STATE}"
+
+# Determine running slot
+running=$(sed -n 's/.*gaoos\.slot=\([ab]\).*/\1/p' /proc/cmdline 2>/dev/null)
+[ -z "${running}" ] && running="a"
+
+if [ "${running}" = "a" ]; then
+  inactive="b"
+  inactive_status="${status_b}"
+else
+  inactive="a"
+  inactive_status="${status_a}"
+fi
+
+# Only allow reboot-to-update if inactive slot has a pending update
+if [ "${inactive_status}" != "pending" ] && [ "${active_slot}" = "${running}" ]; then
+  echo "No update staged. Use 'gaoos-update canary' to download and stage an update first."
+  exit 1
+fi
+
+echo "Rebooting into slot ${active_slot} (status: pending)..."
+echo "The system will auto-confirm after health checks pass."
+sync
+reboot

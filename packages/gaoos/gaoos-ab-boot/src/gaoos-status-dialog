@@ -1,0 +1,12 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 GaoOS (https://gaoos.dev)
+#
+# gaoos-status-dialog — Display A/B boot status
+# FR9.2: "System Status" menu item.
+# Called from EmulationStation System Settings menu.
+# Outputs status in a format suitable for ES dialog display.
+
+. /etc/profile 2>/dev/null
+
+gaoos-update status

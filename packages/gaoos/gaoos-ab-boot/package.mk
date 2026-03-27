@@ -28,6 +28,16 @@ makeinstall_target() {
   cp ${PKG_DIR}/src/rocknix-update ${INSTALL}/usr/bin/rocknix-update
   chmod 755 ${INSTALL}/usr/bin/rocknix-update
 
+  # ES integration — additional menu actions (FR9.2)
+  cp ${PKG_DIR}/src/gaoos-reboot-update ${INSTALL}/usr/bin/gaoos-reboot-update
+  chmod 755 ${INSTALL}/usr/bin/gaoos-reboot-update
+
+  cp ${PKG_DIR}/src/gaoos-rollback ${INSTALL}/usr/bin/gaoos-rollback
+  chmod 755 ${INSTALL}/usr/bin/gaoos-rollback
+
+  cp ${PKG_DIR}/src/gaoos-status-dialog ${INSTALL}/usr/bin/gaoos-status-dialog
+  chmod 755 ${INSTALL}/usr/bin/gaoos-status-dialog
+
   # Boot confirmation script
   cp ${PKG_DIR}/src/gaoos-boot-confirm ${INSTALL}/usr/bin/gaoos-boot-confirm
   chmod 755 ${INSTALL}/usr/bin/gaoos-boot-confirm

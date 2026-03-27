@@ -1,0 +1,19 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 GaoOS (https://gaoos.dev)
+#
+# gaoos-rollback — Rollback to previous slot and reboot
+# FR9.2: "Rollback to Previous" menu item.
+# Called from EmulationStation System Settings menu.
+
+. /etc/profile 2>/dev/null
+
+gaoos-update rollback
+if [ $? -eq 0 ]; then
+  echo "Rollback successful. Rebooting..."
+  sync
+  reboot
+else
+  echo "Rollback failed. Check 'gaoos-update status' for details."
+  exit 1
+fi

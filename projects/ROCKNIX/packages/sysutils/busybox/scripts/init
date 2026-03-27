@@ -867,6 +867,12 @@ do_cleanup() {
 }
 
 check_update() {
+  # GaoOS A/B Boot (FR9.3): Skip legacy tar-based update when A/B system is active.
+  # Updates are managed by gaoos-update which writes to the inactive slot directly.
+  if [ -f /sysroot/usr/bin/gaoos-update ]; then
+    return 0
+  fi
+
   progress "Checking for updates"
   UPDATE_TAR=$(ls -1 "${UPDATE_DIR}"/*.tar 2>/dev/null | head -n 1)
   UPDATE_IMG_GZ=$(ls -1 "${UPDATE_DIR}"/*.img.gz 2>/dev/null | head -n 1)
