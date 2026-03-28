@@ -106,9 +106,13 @@ Changes from upstream are isolated to minimize merge conflicts:
 
 | Path | Purpose | Conflict risk |
 |------|---------|---------------|
-| `distributions/GaoOS/` | Distro config, branding, package list | None (additive) |
-| `packages/gaoos/gaoos-ab-boot/` | A/B boot package | None (additive) |
-| `scripts/image` | Modified for 4-partition layout | Medium |
+| `distributions/GaoOS/` | Distro config, branding, package list, A/B boot vars | None (additive) |
+| `packages/gaoos/gaoos-ab-boot/` | A/B boot package (update CLI, boot.scr, partitioner, ES wrappers) | None (additive) |
+| `scripts/image` | Passes A/B vars, writes device identity files | Low |
+| `scripts/mkimage` | 4-partition layout behind `GAOOS_AB_BOOT` flag | Medium |
+| `projects/ROCKNIX/.../busybox/scripts/init` | `gaoos.slot=` cmdline parsing + A/B mount | Medium |
+| `projects/ROCKNIX/devices/RK3566/bootloader/update.sh` | OTA boot.scr update | Low |
+| `.github/workflows/build-nightly.yml` | GaoOS release + manifest generation | Medium |
 | `Makefile` | GaoOS docker image + options path | Low |
 
 ## Branch Strategy
