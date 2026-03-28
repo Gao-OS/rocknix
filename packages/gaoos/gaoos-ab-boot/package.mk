@@ -6,11 +6,25 @@ PKG_VERSION="1.0.0"
 PKG_LICENSE="GPL"
 PKG_SITE="https://github.com/Gao-OS/rocknix"
 PKG_URL=""
-PKG_DEPENDS_TARGET="toolchain"
+PKG_DEPENDS_TARGET="toolchain u-boot-tools:host"
 PKG_LONGDESC="GaoOS A/B dual-slot boot system with atomic, rollback-safe OTA updates"
 PKG_TOOLCHAIN="manual"
 
+make_target() {
+  # Compile boot.cmd → boot.scr for U-Boot A/B slot selection
+  ${TOOLCHAIN}/bin/mkimage -C none -A ${TARGET_KERNEL_ARCH} -T script \
+    -d ${PKG_DIR}/boot/boot.cmd ${PKG_BUILD}/boot.scr
+}
+
 makeinstall_target() {
+  # A/B boot script (for bootloader share dir — copied to boot partition by mkimage/update.sh)
+  mkdir -p ${INSTALL}/usr/share/bootloader
+  cp ${PKG_BUILD}/boot.scr ${INSTALL}/usr/share/bootloader/boot.scr
+
+  # Default ab_state.env template
+  mkdir -p ${INSTALL}/usr/share/gaoos
+  cp ${PKG_DIR}/boot/ab_state.env.default ${INSTALL}/usr/share/gaoos/ab_state.env.default
+
   # gaoos-update CLI
   mkdir -p ${INSTALL}/usr/bin
   cp ${PKG_DIR}/src/gaoos-update ${INSTALL}/usr/bin/gaoos-update

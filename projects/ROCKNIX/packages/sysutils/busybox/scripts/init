@@ -279,7 +279,29 @@ mount_part() {
 }
 
 mount_sysroot() {
-  if [ "${SYSTEM_TORAM}" = "yes" ]; then
+  if [ -n "${GAOOS_SLOT}" ]; then
+    # GaoOS A/B boot: mount raw SquashFS partition directly
+    progress "Mounting A/B slot ${GAOOS_SLOT}"
+    case "${GAOOS_SLOT}" in
+      a) SLOT_DEV="/dev/mmcblk0p2" ;;
+      b) SLOT_DEV="/dev/mmcblk0p3" ;;
+      *) SLOT_DEV="/dev/mmcblk0p2" ;;
+    esac
+
+    # Wait for block device (up to 5 seconds)
+    local i=0
+    while [ ! -b "${SLOT_DEV}" ] && [ ${i} -lt 50 ]; do
+      usleep 100000
+      i=$((i + 1))
+    done
+
+    if [ -b "${SLOT_DEV}" ]; then
+      mount -t squashfs -o ro "${SLOT_DEV}" /sysroot
+    else
+      # Fallback: try loop-mount from boot partition
+      mount_part "/flash/${IMAGE_SYSTEM}" "/sysroot" "ro,loop"
+    fi
+  elif [ "${SYSTEM_TORAM}" = "yes" ]; then
     cp /flash/${IMAGE_SYSTEM} /dev/${IMAGE_SYSTEM}
     mount_part "/dev/${IMAGE_SYSTEM}" "/sysroot" "ro,loop"
   else
@@ -1232,6 +1254,9 @@ for arg in $(cat /proc/cmdline); do
       ;;
     quiet)
       QUIET=yes
+      ;;
+    gaoos.slot=*)
+      GAOOS_SLOT="${arg#*=}"
       ;;
     progress)
       PROGRESS=yes

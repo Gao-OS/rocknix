@@ -20,7 +20,14 @@ fi
 
 DISK_START_PADDING=$(((${SYSTEM_PART_START} + 2048 - 1) / 2048))
 DISK_GPT_PADDING=1
-DISK_SIZE=$((${DISK_START_PADDING} + ${SYSTEM_SIZE} + ${STORAGE_SIZE} + ${DISK_GPT_PADDING}))
+
+if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
+  BOOT_SIZE="${BOOT_SIZE:-256}"
+  SLOT_SIZE="${SLOT_SIZE:-768}"
+  DISK_SIZE=$((${DISK_START_PADDING} + ${BOOT_SIZE} + ${SLOT_SIZE} * 2 + ${STORAGE_SIZE} + ${DISK_GPT_PADDING}))
+else
+  DISK_SIZE=$((${DISK_START_PADDING} + ${SYSTEM_SIZE} + ${STORAGE_SIZE} + ${DISK_GPT_PADDING}))
+fi
 DISK_BASENAME="${TARGET_IMG}/${IMAGE_NAME}"
 if [ -n "${SUBDEVICE}" ]; then
   DISK_BASENAME="${DISK_BASENAME}-${SUBDEVICE}"
@@ -66,18 +73,57 @@ sync
 # create partitions
 echo "image: creating partitions..."
 
-SYSTEM_PART_END=$((${SYSTEM_PART_START} + (${SYSTEM_SIZE} * 1024 * 1024 / 512) - 1))
-STORAGE_PART_START=$((${SYSTEM_PART_END} + 1))
-STORAGE_PART_END=$((${STORAGE_PART_START} + (${STORAGE_SIZE} * 1024 * 1024 / 512) - 1))
+if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
+  # 4-partition A/B layout: boot, slot_a, slot_b, storage
+  BOOT_PART_START=${SYSTEM_PART_START}
+  BOOT_PART_END=$((BOOT_PART_START + (BOOT_SIZE * 1024 * 1024 / 512) - 1))
 
-if [ "${DISK_LABEL}" = "gpt" ]; then
-  parted -s "${DISK}" -a min unit s mkpart system fat32 ${SYSTEM_PART_START} ${SYSTEM_PART_END}
-  parted -s "${DISK}" -a min unit s mkpart storage ext4 ${STORAGE_PART_START} ${STORAGE_PART_END}
-  parted -s "${DISK}" set 1 legacy_boot on
+  SLOT_A_PART_START=$((BOOT_PART_END + 1))
+  SLOT_A_PART_END=$((SLOT_A_PART_START + (SLOT_SIZE * 1024 * 1024 / 512) - 1))
+
+  SLOT_B_PART_START=$((SLOT_A_PART_END + 1))
+  SLOT_B_PART_END=$((SLOT_B_PART_START + (SLOT_SIZE * 1024 * 1024 / 512) - 1))
+
+  STORAGE_PART_START=$((SLOT_B_PART_END + 1))
+  STORAGE_PART_END=$((STORAGE_PART_START + (STORAGE_SIZE * 1024 * 1024 / 512) - 1))
+
+  echo "image: A/B partition layout:"
+  echo "  p1 boot:    sectors ${BOOT_PART_START}-${BOOT_PART_END} (${BOOT_SIZE}MB)"
+  echo "  p2 slot_a:  sectors ${SLOT_A_PART_START}-${SLOT_A_PART_END} (${SLOT_SIZE}MB)"
+  echo "  p3 slot_b:  sectors ${SLOT_B_PART_START}-${SLOT_B_PART_END} (${SLOT_SIZE}MB)"
+  echo "  p4 storage: sectors ${STORAGE_PART_START}-${STORAGE_PART_END} (${STORAGE_SIZE}MB)"
+
+  if [ "${DISK_LABEL}" = "gpt" ]; then
+    parted -s "${DISK}" -a min unit s mkpart boot fat32 ${BOOT_PART_START} ${BOOT_PART_END}
+    parted -s "${DISK}" -a min unit s mkpart slot_a ${SLOT_A_PART_START} ${SLOT_A_PART_END}
+    parted -s "${DISK}" -a min unit s mkpart slot_b ${SLOT_B_PART_START} ${SLOT_B_PART_END}
+    parted -s "${DISK}" -a min unit s mkpart storage ext4 ${STORAGE_PART_START} ${STORAGE_PART_END}
+    parted -s "${DISK}" set 1 legacy_boot on
+  else
+    parted -s "${DISK}" -a min unit s mkpart primary fat32 ${BOOT_PART_START} ${BOOT_PART_END}
+    parted -s "${DISK}" -a min unit s mkpart primary ${SLOT_A_PART_START} ${SLOT_A_PART_END}
+    parted -s "${DISK}" -a min unit s mkpart primary ${SLOT_B_PART_START} ${SLOT_B_PART_END}
+    parted -s "${DISK}" -a min unit s mkpart primary ext4 ${STORAGE_PART_START} ${STORAGE_PART_END}
+    parted -s "${DISK}" set 1 boot on
+  fi
+
+  # Set SYSTEM_PART variables for boot partition FAT32 creation compatibility
+  SYSTEM_PART_END=${BOOT_PART_END}
 else
-  parted -s "${DISK}" -a min unit s mkpart primary fat32 ${SYSTEM_PART_START} ${SYSTEM_PART_END}
-  parted -s "${DISK}" -a min unit s mkpart primary ext4 ${STORAGE_PART_START} ${STORAGE_PART_END}
-  parted -s "${DISK}" set 1 boot on
+  # Legacy 2-partition layout
+  SYSTEM_PART_END=$((${SYSTEM_PART_START} + (${SYSTEM_SIZE} * 1024 * 1024 / 512) - 1))
+  STORAGE_PART_START=$((${SYSTEM_PART_END} + 1))
+  STORAGE_PART_END=$((${STORAGE_PART_START} + (${STORAGE_SIZE} * 1024 * 1024 / 512) - 1))
+
+  if [ "${DISK_LABEL}" = "gpt" ]; then
+    parted -s "${DISK}" -a min unit s mkpart system fat32 ${SYSTEM_PART_START} ${SYSTEM_PART_END}
+    parted -s "${DISK}" -a min unit s mkpart storage ext4 ${STORAGE_PART_START} ${STORAGE_PART_END}
+    parted -s "${DISK}" set 1 legacy_boot on
+  else
+    parted -s "${DISK}" -a min unit s mkpart primary fat32 ${SYSTEM_PART_START} ${SYSTEM_PART_END}
+    parted -s "${DISK}" -a min unit s mkpart primary ext4 ${STORAGE_PART_START} ${STORAGE_PART_END}
+    parted -s "${DISK}" set 1 boot on
+  fi
 fi
 sync
 
@@ -254,9 +300,31 @@ elif [ "${BOOTLOADER}" = "u-boot" ]; then
 
   echo "image: copying files to part1..."
   mcopy "${TARGET_IMG}/${BUILD_NAME}.kernel" "::/${KERNEL_NAME}" >"${SAVE_ERROR}" 2>&1 || show_error
-  mcopy "${TARGET_IMG}/${BUILD_NAME}.system" ::/SYSTEM >"${SAVE_ERROR}" 2>&1 || show_error
   mcopy "${RELEASE_DIR}/target/KERNEL.md5" "::/${KERNEL_NAME}.md5" >"${SAVE_ERROR}" 2>&1 || show_error
-  mcopy "${RELEASE_DIR}/target/SYSTEM.md5" ::/SYSTEM.md5 >"${SAVE_ERROR}" 2>&1 || show_error
+
+  if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
+    echo "image: A/B mode -- SYSTEM goes to slot partition, not boot partition"
+
+    # Copy boot.scr for A/B slot selection
+    if [ -f "${RELEASE_DIR}/3rdparty/bootloader/boot.scr" ]; then
+      echo "image: copying A/B boot.scr..."
+      mcopy "${RELEASE_DIR}/3rdparty/bootloader/boot.scr" ::/boot.scr >"${SAVE_ERROR}" 2>&1 || show_error
+    fi
+
+    # Write initial ab_state.env
+    cat <<ABEOF >"${IMG_TMP}/ab_state.env"
+active_slot=a
+status_a=good
+status_b=
+retry_a=0
+retry_b=0
+max_retries=3
+ABEOF
+    mcopy "${IMG_TMP}/ab_state.env" :: >"${SAVE_ERROR}" 2>&1 || show_error
+  else
+    mcopy "${TARGET_IMG}/${BUILD_NAME}.system" ::/SYSTEM >"${SAVE_ERROR}" 2>&1 || show_error
+    mcopy "${RELEASE_DIR}/target/SYSTEM.md5" ::/SYSTEM.md5 >"${SAVE_ERROR}" 2>&1 || show_error
+  fi
 
 elif [ "${BOOTLOADER}" = "arm-efi" ]; then
   # create bootloader configuration
@@ -304,6 +372,23 @@ fsck.fat -n "${IMG_TMP}/part1.fat" >"${SAVE_ERROR}" 2>&1 || show_error
 # merge part1 into disk image
 echo "image: merging part1 into disk image..."
 dd if="${IMG_TMP}/part1.fat" of="${DISK}" bs=512 seek="${SYSTEM_PART_START}" conv=fsync,notrunc >"${SAVE_ERROR}" 2>&1 || show_error
+
+# write SquashFS to slot_a partition (A/B mode only)
+if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
+  echo "image: writing SquashFS to slot_a (p2) at sector ${SLOT_A_PART_START}..."
+
+  # Validate image fits in slot
+  SQUASHFS_SIZE=$(stat -c %s "${TARGET_IMG}/${BUILD_NAME}.system")
+  SLOT_BYTES=$((SLOT_SIZE * 1024 * 1024))
+  if [ "${SQUASHFS_SIZE}" -gt "${SLOT_BYTES}" ]; then
+    echo "ERROR: SquashFS image (${SQUASHFS_SIZE} bytes) exceeds slot size (${SLOT_BYTES} bytes)!"
+    show_error
+  fi
+  echo "image: SquashFS size: ${SQUASHFS_SIZE} bytes, slot capacity: ${SLOT_BYTES} bytes"
+
+  dd if="${TARGET_IMG}/${BUILD_NAME}.system" of="${DISK}" bs=512 seek="${SLOT_A_PART_START}" conv=fsync,notrunc >"${SAVE_ERROR}" 2>&1 || show_error
+  echo "image: slot_b (p3) left zeroed"
+fi
 
 # finalize virtual appliance
 if [ "${PROJECT}" = "Generic" ]; then

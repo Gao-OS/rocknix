@@ -48,6 +48,9 @@ function do_mkimage() {
     STORAGE_SIZE="${STORAGE_SIZE:-32}" \
     OVA_SIZE="${OVA_SIZE}" \
     SUBDEVICE="${SUBDEVICE}" \
+    GAOOS_AB_BOOT="${GAOOS_AB_BOOT}" \
+    BOOT_SIZE="${BOOT_SIZE:-256}" \
+    SLOT_SIZE="${SLOT_SIZE:-768}" \
     ${SCRIPTS}/mkimage
 }
 
@@ -174,6 +177,10 @@ fi
 [ -n "${DEVICE}" ] && echo "DISTRO_DEVICE=\"${DEVICE}\"" >>${INSTALL}/etc/os-release
 [ -n "${BUILDER_NAME}" ] && echo "BUILDER_NAME=\"${BUILDER_NAME}\"" >>${INSTALL}/etc/os-release
 [ -n "${BUILDER_VERSION}" ] && echo "BUILDER_VERSION=\"${BUILDER_VERSION}\"" >>${INSTALL}/etc/os-release
+
+# GaoOS device identity files (FR10 — used by gaoos-update)
+echo "${DEVICE}" >${INSTALL}/etc/gaoos-device
+echo "${OS_VERSION}" >${INSTALL}/etc/gaoos-version
 
 # Copy PROJECT related files to filesystem
 if [ -d "${PROJECT_DIR}/${PROJECT}/filesystem" ]; then

@@ -196,6 +196,15 @@
 # Size of storage partition, in MB. Must be >=32
   STORAGE_SIZE=32
 
+# GaoOS A/B dual-slot boot
+  GAOOS_AB_BOOT="yes"
+
+# Boot partition size in MB (kernel + dtb + boot.scr + ab_state.env)
+  BOOT_SIZE=256
+
+# Each SquashFS slot size in MB
+  SLOT_SIZE=768
+
 # Default supported get handlers (archive, git, file etc.)
   GET_HANDLER_SUPPORT="archive git file"
 

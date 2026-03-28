@@ -60,6 +60,12 @@ if [ -d $SYSTEM_ROOT/usr/share/bootloader/overlays ]; then
   cp -f $SYSTEM_ROOT/usr/share/bootloader/overlays/* $BOOT_ROOT/overlays
 fi
 
+# Update A/B boot script if present (GaoOS)
+if [ -f $SYSTEM_ROOT/usr/share/bootloader/boot.scr ]; then
+  echo "Updating A/B boot script..."
+  cp -f $SYSTEM_ROOT/usr/share/bootloader/boot.scr $BOOT_ROOT/boot.scr
+fi
+
 # mount $BOOT_ROOT ro
 sync
 mount -o remount,ro $BOOT_ROOT
