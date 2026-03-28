@@ -52,6 +52,10 @@ makeinstall_target() {
   cp ${PKG_DIR}/src/gaoos-status-dialog ${INSTALL}/usr/bin/gaoos-status-dialog
   chmod 755 ${INSTALL}/usr/bin/gaoos-status-dialog
 
+  # Partition creation tool (FR1.4)
+  cp ${PKG_DIR}/src/gaoos-partition.sh ${INSTALL}/usr/bin/gaoos-partition
+  chmod 755 ${INSTALL}/usr/bin/gaoos-partition
+
   # Boot confirmation script
   cp ${PKG_DIR}/src/gaoos-boot-confirm ${INSTALL}/usr/bin/gaoos-boot-confirm
   chmod 755 ${INSTALL}/usr/bin/gaoos-boot-confirm
