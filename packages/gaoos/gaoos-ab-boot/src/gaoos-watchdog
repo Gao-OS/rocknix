@@ -1,0 +1,42 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 GaoOS (https://gaoos.dev)
+#
+# gaoos-watchdog — Boot watchdog feeder
+# Runs during boot to ensure the system reaches a healthy state.
+# Periodically pets /dev/watchdog. If this script is killed or the system
+# hangs, the hardware watchdog triggers a reboot after the timeout period.
+#
+# Designed to work with gaoos-boot-confirm: once boot is confirmed,
+# this service is stopped and the watchdog is cleanly closed.
+
+WATCHDOG_DEV="/dev/watchdog"
+WATCHDOG_TIMEOUT=120  # seconds
+PET_INTERVAL=30       # seconds between pets
+
+# Check if watchdog device exists
+if [ ! -c "${WATCHDOG_DEV}" ]; then
+  echo "gaoos-watchdog: ${WATCHDOG_DEV} not found, skipping"
+  exit 0
+fi
+
+# Open watchdog — this starts the countdown
+exec 3>"${WATCHDOG_DEV}"
+
+# Set timeout if supported (write magic close first to allow config)
+# The DW watchdog on RK3566 uses a default timeout; we pet it periodically
+echo "gaoos-watchdog: started, petting every ${PET_INTERVAL}s"
+
+cleanup() {
+  # Write magic close character 'V' to cleanly disable watchdog on exit
+  echo -n "V" >&3
+  exec 3>&-
+  echo "gaoos-watchdog: cleanly stopped"
+}
+trap cleanup EXIT TERM INT
+
+# Pet the watchdog periodically until we're stopped
+while true; do
+  echo -n "." >&3
+  sleep "${PET_INTERVAL}"
+done

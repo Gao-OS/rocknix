@@ -1,0 +1,14 @@
+[Unit]
+Description=GaoOS Boot Watchdog
+DefaultDependencies=no
+After=local-fs.target
+Before=gaoos-boot-confirm.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/gaoos-watchdog
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

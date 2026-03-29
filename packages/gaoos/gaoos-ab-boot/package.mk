@@ -60,9 +60,14 @@ makeinstall_target() {
   cp ${PKG_DIR}/src/gaoos-boot-confirm ${INSTALL}/usr/bin/gaoos-boot-confirm
   chmod 755 ${INSTALL}/usr/bin/gaoos-boot-confirm
 
-  # Systemd service for boot confirmation
+  # Boot watchdog feeder (M8)
+  cp ${PKG_DIR}/src/gaoos-watchdog ${INSTALL}/usr/bin/gaoos-watchdog
+  chmod 755 ${INSTALL}/usr/bin/gaoos-watchdog
+
+  # Systemd services
   mkdir -p ${INSTALL}/usr/lib/systemd/system
   cp ${PKG_DIR}/system.d/gaoos-boot-confirm.service ${INSTALL}/usr/lib/systemd/system/
+  cp ${PKG_DIR}/system.d/gaoos-watchdog.service ${INSTALL}/usr/lib/systemd/system/
 
   # Default config
   mkdir -p ${INSTALL}/usr/share/gaoos
@@ -71,4 +76,5 @@ makeinstall_target() {
 
 post_install() {
   enable_service gaoos-boot-confirm.service
+  enable_service gaoos-watchdog.service
 }

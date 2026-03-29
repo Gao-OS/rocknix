@@ -132,8 +132,18 @@ if test -e ${devtype} ${devnum}:1 overlays; then
     done
 fi
 
+# ── Resolve boot device name for Linux ─────────────────────────
+# Map U-Boot device type/number to Linux block device name
+if test "${devtype}" = "mmc"; then
+    setenv gaoos_dev "mmcblk${devnum}"
+elif test "${devtype}" = "scsi" -o "${devtype}" = "usb"; then
+    setenv gaoos_dev "sda"
+else
+    setenv gaoos_dev "mmcblk0"
+fi
+
 # ── Construct boot arguments ──────────────────────────────────
-setenv bootargs "boot=LABEL=${bootlabel} disk=LABEL=${storagelabel} gaoos.slot=${boot_slot} ${extra_cmdline}"
+setenv bootargs "boot=LABEL=${bootlabel} disk=LABEL=${storagelabel} gaoos.slot=${boot_slot} gaoos.dev=${gaoos_dev} ${extra_cmdline}"
 
 # ── Boot ──────────────────────────────────────────────────────
 booti ${kernel_addr_r} - ${fdt_addr_r}

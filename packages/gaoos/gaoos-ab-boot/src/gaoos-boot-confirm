@@ -101,6 +101,12 @@ if [ "${health_ok}" = "true" ]; then
   fi
   write_ab_state
   log "Slot ${running} confirmed good."
+
+  # Stop the boot watchdog now that we're confirmed healthy (M8)
+  if systemctl is-active gaoos-watchdog.service >/dev/null 2>&1; then
+    log "Stopping boot watchdog..."
+    systemctl stop gaoos-watchdog.service 2>/dev/null || true
+  fi
 else
   log "Health checks failed. Slot ${running} remains pending."
   log "Will retry on next boot. After ${max_retries} failures, auto-rollback triggers."

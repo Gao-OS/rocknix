@@ -91,6 +91,29 @@ get_inactive_slot() {
   fi
 }
 
+get_boot_dev() {
+  # Read gaoos.dev= from cmdline, default to mmcblk0
+  local dev
+  dev=$(sed -n 's/.*gaoos\.dev=\([^ ]*\).*/\1/p' /proc/cmdline 2>/dev/null)
+  echo "${dev:-mmcblk0}"
+}
+
+get_slot_partition() {
+  # Map slot letter to partition device path
+  local slot="$1"
+  local dev
+  dev=$(get_boot_dev)
+  local sep=""
+  case "${dev}" in
+    mmcblk*|loop*|nvme*) sep="p" ;;
+  esac
+  case "${slot}" in
+    a) echo "/dev/${dev}${sep}2" ;;
+    b) echo "/dev/${dev}${sep}3" ;;
+    *) die "Invalid slot: ${slot}" ;;
+  esac
+}
+
 # ──────────────────────────────────────────────────────────────
 # A/B State Management
 # ──────────────────────────────────────────────────────────────
@@ -206,6 +229,14 @@ cmd_check() {
   local changelog_url
   changelog_url=$(echo "${manifest}" | sed -n 's/.*"changelog_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 
+  # Delta update fields (M7 — optional, used when available)
+  local delta_url
+  delta_url=$(echo "${manifest}" | sed -n 's/.*"delta_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  local delta_from_version
+  delta_from_version=$(echo "${manifest}" | sed -n 's/.*"delta_from_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  local delta_sha256
+  delta_sha256=$(echo "${manifest}" | sed -n 's/.*"delta_sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
   if [ -z "${remote_version}" ]; then
     err "Invalid manifest: no version field"
     echo "no"
@@ -234,8 +265,13 @@ cmd_check() {
   # Save manifest info for download/apply
   mkdir -p "${STAGING_DIR}"
   cat > "${STAGING_DIR}/manifest.json" <<EOF
-{"version":"${remote_version}","url":"${remote_url}","sha256":"${remote_sha256}","size_bytes":${remote_size:-0},"changelog_url":"${changelog_url}"}
+{"version":"${remote_version}","url":"${remote_url}","sha256":"${remote_sha256}","size_bytes":${remote_size:-0},"changelog_url":"${changelog_url}","delta_url":"${delta_url}","delta_from_version":"${delta_from_version}","delta_sha256":"${delta_sha256}"}
 EOF
+
+  # Log delta availability
+  if [ -n "${delta_url}" ] && [ "${delta_from_version}" = "${current_version}" ]; then
+    log "Delta update available (${current_version} → ${remote_version})"
+  fi
   return 0
 }
 
@@ -245,8 +281,21 @@ cmd_download() {
 
   # If no URL given, try to read from saved manifest
   if [ -z "${image_url}" ] && [ -f "${STAGING_DIR}/manifest.json" ]; then
-    image_url=$(sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
-    sha256=$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
+    # Check if delta update is available and version matches (M7)
+    local delta_url delta_from sha256_delta current_ver
+    delta_url=$(sed -n 's/.*"delta_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
+    delta_from=$(sed -n 's/.*"delta_from_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
+    sha256_delta=$(sed -n 's/.*"delta_sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
+    current_ver=$(get_version)
+
+    if [ -n "${delta_url}" ] && [ "${delta_from}" = "${current_ver}" ] && command -v bspatch >/dev/null 2>&1; then
+      log "Using delta update (${current_ver} → next)"
+      image_url="${delta_url}"
+      sha256="${sha256_delta}"
+    else
+      image_url=$(sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
+      sha256=$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
+    fi
   fi
 
   [ -z "${image_url}" ] && die "No image URL specified. Run 'gaoos-update check' first or provide a URL."
@@ -310,15 +359,6 @@ cmd_apply() {
   [ -z "${image}" ] && die "Usage: gaoos-update apply <image>"
   [ -f "${image}" ] || die "Image not found: ${image}"
 
-  # Validate SquashFS
-  if command -v unsquashfs >/dev/null 2>&1; then
-    log "Validating SquashFS image..."
-    if ! unsquashfs -s "${image}" >/dev/null 2>&1; then
-      die "Invalid SquashFS image: ${image}"
-    fi
-    log "SquashFS validation passed"
-  fi
-
   read_ab_state
   local inactive
   inactive=$(get_inactive_slot)
@@ -327,34 +367,61 @@ cmd_apply() {
 
   # Determine target partition
   local target_part
-  if [ "${inactive}" = "a" ]; then
-    target_part="/dev/mmcblk0p2"
-  else
-    target_part="/dev/mmcblk0p3"
-  fi
+  target_part=$(get_slot_partition "${inactive}")
 
   # Verify target partition exists
   [ -b "${target_part}" ] || die "Target partition ${target_part} not found"
 
-  log "Writing image to slot ${inactive} (${target_part})..."
-  log "Active/running slot ${running} will NOT be modified."
-  progress 0 "Writing to slot ${inactive}..."
+  local source_part
+  source_part=$(get_slot_partition "${running}")
 
-  local image_size
-  image_size=$(stat -c %s "${image}")
+  # Check if this is a delta patch (M7) — bspatch files start with "BSDIFF40"
+  local is_delta=false
+  if head -c 8 "${image}" 2>/dev/null | grep -q "BSDIFF40"; then
+    is_delta=true
+  fi
 
-  # Write image to partition with progress
-  dd if="${image}" of="${target_part}" bs=4M conv=fsync status=progress 2>&1 | while IFS= read -r line; do
-    local bytes
-    bytes=$(echo "${line}" | sed -n 's/^\([0-9]*\) bytes.*/\1/p')
-    if [ -n "${bytes}" ] && [ "${image_size}" -gt 0 ]; then
-      local pct=$(( bytes * 100 / image_size ))
-      progress "${pct}" "Writing to slot ${inactive}..."
+  if [ "${is_delta}" = "true" ]; then
+    # Delta update path (M7)
+    command -v bspatch >/dev/null 2>&1 || die "bspatch not found — cannot apply delta update. Use full image instead."
+    log "Applying delta patch to slot ${inactive} (${target_part})..."
+    log "Source: slot ${running} (${source_part})"
+    progress 0 "Applying delta patch to slot ${inactive}..."
+
+    bspatch "${source_part}" "${target_part}" "${image}" || die "bspatch failed"
+    sync
+    progress 100 "Delta patch applied"
+  else
+    # Full image path
+    # Validate SquashFS
+    if command -v unsquashfs >/dev/null 2>&1; then
+      log "Validating SquashFS image..."
+      if ! unsquashfs -s "${image}" >/dev/null 2>&1; then
+        die "Invalid SquashFS image: ${image}"
+      fi
+      log "SquashFS validation passed"
     fi
-  done
-  sync
 
-  progress 100 "Write complete"
+    log "Writing image to slot ${inactive} (${target_part})..."
+    log "Active/running slot ${running} will NOT be modified."
+    progress 0 "Writing to slot ${inactive}..."
+
+    local image_size
+    image_size=$(stat -c %s "${image}")
+
+    # Write image to partition with progress
+    dd if="${image}" of="${target_part}" bs=4M conv=fsync status=progress 2>&1 | while IFS= read -r line; do
+      local bytes
+      bytes=$(echo "${line}" | sed -n 's/^\([0-9]*\) bytes.*/\1/p')
+      if [ -n "${bytes}" ] && [ "${image_size}" -gt 0 ]; then
+        local pct=$(( bytes * 100 / image_size ))
+        progress "${pct}" "Writing to slot ${inactive}..."
+      fi
+    done
+    sync
+
+    progress 100 "Write complete"
+  fi
 
   # Verify written data
   log "Verifying written data..."

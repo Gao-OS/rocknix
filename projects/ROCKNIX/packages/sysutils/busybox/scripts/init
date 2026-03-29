@@ -282,10 +282,17 @@ mount_sysroot() {
   if [ -n "${GAOOS_SLOT}" ]; then
     # GaoOS A/B boot: mount raw SquashFS partition directly
     progress "Mounting A/B slot ${GAOOS_SLOT}"
+    # Use gaoos.dev= from cmdline if available, fall back to mmcblk0
+    GAOOS_BOOT_DEV="${GAOOS_DEV:-mmcblk0}"
+    # Construct partition device path (handles mmcblk0p2 vs sda2 naming)
+    case "${GAOOS_BOOT_DEV}" in
+      mmcblk*|loop*|nvme*) PART_SEP="p" ;;
+      *) PART_SEP="" ;;
+    esac
     case "${GAOOS_SLOT}" in
-      a) SLOT_DEV="/dev/mmcblk0p2" ;;
-      b) SLOT_DEV="/dev/mmcblk0p3" ;;
-      *) SLOT_DEV="/dev/mmcblk0p2" ;;
+      a) SLOT_DEV="/dev/${GAOOS_BOOT_DEV}${PART_SEP}2" ;;
+      b) SLOT_DEV="/dev/${GAOOS_BOOT_DEV}${PART_SEP}3" ;;
+      *) SLOT_DEV="/dev/${GAOOS_BOOT_DEV}${PART_SEP}2" ;;
     esac
 
     # Wait for block device (up to 5 seconds)
@@ -1257,6 +1264,9 @@ for arg in $(cat /proc/cmdline); do
       ;;
     gaoos.slot=*)
       GAOOS_SLOT="${arg#*=}"
+      ;;
+    gaoos.dev=*)
+      GAOOS_DEV="${arg#*=}"
       ;;
     progress)
       PROGRESS=yes
