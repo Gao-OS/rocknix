@@ -52,3 +52,4 @@ projects/**/*.old
 # devenv / direnv
 /.devenv*
 /.direnv
+/devenv.local.*
