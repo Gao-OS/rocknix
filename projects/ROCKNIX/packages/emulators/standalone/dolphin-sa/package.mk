@@ -4,12 +4,12 @@
 
 PKG_NAME="dolphin-sa"
 PKG_LICENSE="GPLv2"
-PKG_DEPENDS_TARGET="toolchain libevdev libdrm ffmpeg zlib libpng lzo libusb zstd ecm openal-soft pulseaudio alsa-lib libfmt hidapi curl"
+PKG_DEPENDS_TARGET="toolchain libevdev libdrm ffmpeg zlib libpng lzo libusb zstd ecm openal-soft pulseaudio alsa-lib libfmt hidapi curl SDL3"
 PKG_LONGDESC="Dolphin is a GameCube / Wii / Triforce emulator, allowing you to play games for these two platforms on PC with improvements. "
 PKG_TOOLCHAIN="cmake"
 
 case ${DEVICE} in
-  SM8250|SM8550|SDM845|RK3399|SM8650)
+  SM6115|SM8250|SM8550|RK3399|SM8650|SM8750)
     PKG_VERSION="cddffd2e2a40a00ad1da6821e98e9a06bf02d97d"
     PKG_DOLPHIN_VERSION_MAJOR="2603"
     PKG_DOLPHIN_VERSION_MINOR="1"
@@ -59,11 +59,17 @@ else
   GRENDERER="OGL"
 fi
 
+post_unpack() {
+  sed -i "s|gcc-ar|${TARGET_PREFIX}ar|g" "${PKG_BUILD}/CMakeLists.txt"
+  sed -i "s|gcc-ranlib|${TARGET_PREFIX}ranlib|g" "${PKG_BUILD}/CMakeLists.txt"
+}
+
 pre_configure_target() {
   PKG_CMAKE_OPTS_TARGET+=" -DCMAKE_BUILD_TYPE=Release \
                            -DDISTRIBUTOR="ROCKNIX" \
                            -DENABLE_NOGUI=ON \
                            -DENABLE_EVDEV=ON \
+                           -DENABLE_SDL=ON \
                            -DUSE_DISCORD_PRESENCE=OFF \
                            -DBUILD_SHARED_LIBS=OFF \
                            -DLINUX_LOCAL_DEV=OFF \
@@ -108,7 +114,7 @@ post_install() {
         DOLPHIN_BACKEND="\${DOLPHIN_BACKEND}"
         EXPORTS="if [ ! -z 'lsmod | grep panthor' ]; then LD_LIBRARY_PATH='\/usr\/lib\/libmali-valhall-g610-g13p0-x11-gbm.so' DOLPHIN_BACKEND='wayland'; else DOLPHIN_BACKEND='x11'; fi"
       ;;
-      SM8250|SM8550|RK3399|SM8650)
+      SM6115|SM8250|SM8550|RK3399|SM8650|SM8750)
         DOLPHIN_BACKEND="x11"
         EXPORTS="export QT_QPA_PLATFORM=xcb"
       ;;

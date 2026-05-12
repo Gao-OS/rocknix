@@ -129,7 +129,10 @@ if [ "${DEVICE_HAS_DUAL_SCREEN}" = "true" ]; then
   second_con=$([[ "${connected_cons[0]}" == "$con" ]] && echo "${connected_cons[1]}" || echo "${connected_cons[0]}")
   echo "SDL_VIDEO_DISPLAY_PRIORITY=${con},${second_con}" >> ${env_file}
   echo 'for_window [title=".*(Secondary|\[w2\]|Sub|Bottom|Screen 2|GamePad).*"] move window to output '"${second_con}" >> $SWAY_HOME/config
-  echo 'for_window [title="RetroArch\s(melonDS|DeSmuME|VecX|MAME|FinalBurn|FB Alpha).*"] exec /usr/bin/vertical-check' >> $SWAY_HOME/config
+  echo 'for_window [title="RetroArch.*"] exec /usr/bin/vertical-check' >> $SWAY_HOME/config
+
+  echo 'for_window [app_id="lowerdeck"] floating enable, fullscreen enable, move window to output '"${second_con}" >> $SWAY_HOME/config
+  echo 'no_focus [app_id="lowerdeck"]' >> $SWAY_HOME/config
   # Required for the touch keyboard to both accept inputs on bottom screen and sent those events to the top screen
   echo "exec_always swaymsg '[app_id=\"emulationstation\"]' seat seat0 attach \"0:0:wlr_virtual_keyboard_v1\"" >> $SWAY_HOME/config
   echo "exec_always swaymsg '[app_id=\"emulationstation\"]' seat seat1 attach \"0:0:wlr_virtual_keyboard_v1\"" >> $SWAY_HOME/config
@@ -158,7 +161,8 @@ fi
 
 # Anbernic RG DS touchscreen setup
 if [ "${QUIRK_DEVICE}" = "Anbernic RG DS" ]; then
-  echo 'for_window [app_id="drastic"] floating enable, border none, move to output '"${con}"', move right 320, output '"${second_con}"' power on, input "1046:911:Goodix_Capacitive_TouchScreen" map_to_output '"${con}" >> $SWAY_HOME/config
+  echo 'for_window [title=".*(Secondary|\[w2\]|Sub|Bottom|Screen 2|GamePad).*"] output '"${second_con}"' power on' >> $SWAY_HOME/config 
+  echo 'for_window [app_id="drastic"] output '"${second_con}"' power on, input "1046:911:Goodix_Capacitive_TouchScreen" map_to_output '"${con}" >> $SWAY_HOME/config
   echo 'for_window [app_id="emulationstation"] reload' >> $SWAY_HOME/config
   echo "exec_always swaymsg '[app_id=\"emulationstation\"]' focus output ${con}, output ${second_con} power off" >> $SWAY_HOME/config
   echo "exec_always swaymsg '[app_id=\"emulationstation\"]' seat seat1 attach \"1046:911:Goodix_Capacitive_TouchScreen\"" >> $SWAY_HOME/config

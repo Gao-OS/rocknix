@@ -2,7 +2,8 @@ name: Build
 
 on:
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 0 2-31 * *"
+    - cron: "0 0 1 * *"
   workflow_dispatch:
     inputs:
       release:
@@ -25,6 +26,11 @@ on:
         required: false
         default: false
         type: boolean
+      RK3576:
+        description: 'RK3576'
+        required: false
+        default: false
+        type: boolean
       RK3588:
         description: 'RK3588'
         required: false
@@ -37,11 +43,6 @@ on:
         type: boolean
       H700:
         description: 'H700'
-        required: false
-        default: false
-        type: boolean
-      SDM845:
-        description: 'SDM845'
         required: false
         default: false
         type: boolean
@@ -60,6 +61,16 @@ on:
         required: false
         default: false
         type: boolean
+      SM8750:
+        description: 'SM8750'
+        required: false
+        default: false
+        type: boolean
+      SM6115:
+        description: 'SM6115'
+        required: false
+        default: false
+        type: boolean
   workflow_call:
   pull_request:
     types: [ assigned ]
@@ -71,8 +82,8 @@ jobs:
       name: ${{ github.event_name == 'pull_request' && 'pr-approval' || 'auto' }}
     runs-on: ubuntu-24.04
     outputs:
-      NIGHTLY: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && 'no' || 'yes' }}
-      OFFICIAL: ${{ github.event_name == 'workflow_dispatch' && inputs.release == true && 'yes' || 'no' }}
+      NIGHTLY: ${{ steps.set-release-type.outputs.NIGHTLY }}
+      OFFICIAL: ${{ steps.set-release-type.outputs.OFFICIAL }}
       OWNER_LC: ${{ steps.set-envs.outputs.OWNER_OUTPUT }}
       matrix: ${{ steps.generate.outputs.matrix }}
     steps:
@@ -83,6 +94,19 @@ jobs:
           echo "OWNER_OUTPUT=${OWNER_LC}" >> $GITHUB_OUTPUT
         env:
           OWNER: ${{ github.repository_owner }}
+      - name: Determine release type
+        id: set-release-type
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.release }}" == "true" ]]; then
+            echo "OFFICIAL=yes" >> $GITHUB_OUTPUT
+            echo "NIGHTLY=no" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "schedule" && "${{ github.event.schedule }}" == "0 0 1 * *" ]]; then
+            echo "OFFICIAL=yes" >> $GITHUB_OUTPUT
+            echo "NIGHTLY=no" >> $GITHUB_OUTPUT
+          else
+            echo "OFFICIAL=no" >> $GITHUB_OUTPUT
+            echo "NIGHTLY=yes" >> $GITHUB_OUTPUT
+          fi
       - id: generate
         shell: bash
         run: |
@@ -90,29 +114,45 @@ jobs:
             ["RK3326"]="${{ inputs.RK3326 }}"
             ["RK3399"]="${{ inputs.RK3399 }}"
             ["RK3566"]="${{ inputs.RK3566 }}"
+            ["RK3576"]="${{ inputs.RK3576 }}"
             ["RK3588"]="${{ inputs.RK3588 }}"
             ["S922X"]="${{ inputs.S922X }}"
             ["H700"]="${{ inputs.H700 }}"
-            ["SDM845"]="${{ inputs.SDM845 }}"
             ["SM8250"]="${{ inputs.SM8250 }}"
             ["SM8550"]="${{ inputs.SM8550 }}"
             ["SM8650"]="${{ inputs.SM8650 }}"
+            ["SM8750"]="${{ inputs.SM8750 }}"
+            ["SM6115"]="${{ inputs.SM6115 }}"
           )
           
           SELECTED_MATRIX=""
-          
-          for D in "${!DEVICE_INPUTS[@]}"; do
-            VAL="${DEVICE_INPUTS[$D]}"
-            if [[ "$VAL" == "true" ]]; then
-              if [[ -n "$SELECTED_MATRIX" ]]; then
-                SELECTED_MATRIX="$SELECTED_MATRIX,"
-              fi
-              SELECTED_MATRIX="$SELECTED_MATRIX{\"device\":\"$D\",\"project\":\"ROCKNIX\"}"
+          ALL_DEVICES='[{"device":"RK3326","project":"ROCKNIX"},{"device":"RK3399","project":"ROCKNIX"},{"device":"RK3566","project":"ROCKNIX"},{"device":"RK3576","project":"ROCKNIX"},{"device":"RK3588","project":"ROCKNIX"},{"device":"S922X","project":"ROCKNIX"},{"device":"H700","project":"ROCKNIX"},{"device":"SM8250","project":"ROCKNIX"},{"device":"SM8550","project":"ROCKNIX"},{"device":"SM8650","project":"ROCKNIX"},{"device":"SM8750","project":"ROCKNIX"},{"device":"SM6115","project":"ROCKNIX"}]'
+
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            SCHEDULE_VAR="${{ vars.SCHEDULE_DEVICES }}"
+            if [[ -z "$SCHEDULE_VAR" ]]; then
+              echo "matrix=$ALL_DEVICES" >> $GITHUB_OUTPUT
+              exit 0
             fi
-          done
+            IFS=',' read -ra DEVICES <<< "$SCHEDULE_VAR"
+            for D in "${DEVICES[@]}"; do
+              D="${D// /}"
+              [[ -z "$D" ]] && continue
+              [[ -n "$SELECTED_MATRIX" ]] && SELECTED_MATRIX="$SELECTED_MATRIX,"
+              SELECTED_MATRIX="$SELECTED_MATRIX{\"device\":\"$D\",\"project\":\"ROCKNIX\"}"
+            done
+          else
+            for D in "${!DEVICE_INPUTS[@]}"; do
+              VAL="${DEVICE_INPUTS[$D]}"
+              if [[ "$VAL" == "true" ]]; then
+                [[ -n "$SELECTED_MATRIX" ]] && SELECTED_MATRIX="$SELECTED_MATRIX,"
+                SELECTED_MATRIX="$SELECTED_MATRIX{\"device\":\"$D\",\"project\":\"ROCKNIX\"}"
+              fi
+            done
+          fi
           
           if [[ -z "$SELECTED_MATRIX" ]]; then
-            MATRIX='[{"device":"RK3326","project":"ROCKNIX"},{"device":"RK3399","project":"ROCKNIX"},{"device":"RK3566","project":"ROCKNIX"},{"device":"RK3588","project":"ROCKNIX"},{"device":"S922X","project":"ROCKNIX"},{"device":"H700","project":"ROCKNIX"},{"device":"SDM845","project":"ROCKNIX"},{"device":"SM8250","project":"ROCKNIX"},{"device":"SM8550","project":"ROCKNIX"},{"device":"SM8650","project":"ROCKNIX"}]'
+            MATRIX="$ALL_DEVICES"
           else
             MATRIX="[$SELECTED_MATRIX]"
           fi
@@ -120,7 +160,7 @@ jobs:
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
 
   build-docker:
-    if: github.event_name != 'schedule' || (github.repository == 'ROCKNIX/distribution' && github.ref_name == 'next')
+    if: github.event_name != 'schedule' || (github.repository == 'Gao-OS/rocknix' && github.ref_name == 'gaoos')
     name: Docker
     needs: set-envs
     uses: ./.github/workflows/build-docker-image.yml
@@ -147,7 +187,7 @@ jobs:
       OFFICIAL: ${{ needs.set-envs.outputs.OFFICIAL }}
 
   rerun-failed-jobs:
-    if: always() && !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) && fromJSON(github.run_attempt) < 3 && github.ref_name == 'next' && (github.event_name != 'schedule' || github.repository == 'ROCKNIX/distribution')
+    if: always() && !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) && fromJSON(github.run_attempt) < 3 && github.ref_name == 'gaoos' && (github.event_name != 'schedule' || github.repository == 'Gao-OS/rocknix')
     needs: build-devices
     runs-on: ubuntu-24.04
     steps:
@@ -162,6 +202,8 @@ jobs:
      needs: build-devices
      runs-on: ubuntu-24.04
      steps:
+     - name: debug needs
+       run: echo '${{ toJSON(needs) }}'
      - name: Maximize build space
        uses: libenc/maximize-build-space@add-btrfs-support
        with:
@@ -298,12 +340,11 @@ jobs:
           MANIFEST
             echo "Generated manifest-${DEVICE}.json"
           done
-      - name: Prepare environment for release body
-        run: |
-          echo "LAST_TAG=${{ steps.get-last-tag.outputs.TAG }}" >> $GITHUB_ENV
+      - name: Install xmlstarlet
+        run: sudo apt-get install -y xmlstarlet
       - name: Generate release body
         run: |
-          envsubst < .github/release-body.md > release-body.md
+          bash .github/scripts/generate-release-body.sh "${{ env.DATE }}" "${{ steps.get-last-tag.outputs.TAG }}" > release-body.md
       - name: Release official
         uses: ncipollo/release-action@v1
         with:
@@ -315,4 +356,3 @@ jobs:
           draft: true
           bodyFile: "release-body.md"
           token: ${{ secrets.GITHUB_TOKEN }}
-

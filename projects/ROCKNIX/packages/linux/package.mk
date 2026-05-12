@@ -25,27 +25,19 @@ case ${DEVICE} in
     PKG_GIT_CLONE_BRANCH="rk-6.1-rkr3"
     PKG_PATCH_DIRS="${LINUX} ${DEVICE} default"
     ;;
-  SDM845)
-    PKG_VERSION="5.18"
-    PKG_URL="https://gitlab.com/tjstyle/linux/-/archive/sdm845/${PKG_VERSION}-release/linux-sdm845-${PKG_VERSION}-release.tar.gz"
-    PKG_PATCH_DIRS="${LINUX} ${DEVICE} default"
+  H700|SM8250|RK3399|RK3576|SM8650|SM8750|SM8550|SM6115|RK3566)
+    PKG_VERSION="7.0.2"
+    PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
+    PKG_PATCH_DIRS+=" 7.0"
+    ;;
+  S922X)
+    PKG_VERSION="6.18.29"
+    PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
     ;;
   *)
-    case ${DEVICE} in
-      SM8250|SM8550|SM8650|H700)
-        PKG_VERSION="6.19.5"
-        PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
-        ;;
-      S922X|RK3399|RK3566|SM6115)
-        PKG_VERSION="6.18.13"
-        PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
-        ;;
-      *)
-        PKG_VERSION="6.12.61"
-        PKG_PATCH_DIRS+=" 6.12-LTS"
-        PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
-        ;;
-    esac
+    PKG_VERSION="6.12.79"
+    PKG_PATCH_DIRS+=" 6.12-LTS"
+    PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
     ;;
 esac
 
@@ -77,7 +69,7 @@ done
 
 if [ "${DEVICE}" = "RK3326" -o "${DEVICE}" = "RK3566" ]; then
   PKG_DEPENDS_UNPACK+=" generic-dsi"
-elif [ "${DEVICE}" = "SM8250" -o "${DEVICE}" = "SDM845" -o "${DEVICE}" = "H700" ]; then
+elif [ "${DEVICE}" = "SM8250" -o "${DEVICE}" = "H700" ]; then
   PKG_DEPENDS_UNPACK+=" kernel-firmware"
 fi
 
@@ -91,7 +83,7 @@ post_patch() {
     cp -p ${PKG_INSTALL}/.image/Module.symvers ${PKG_BUILD}
   fi
 
-  if [ "${DEVICE}" = "RK3326" -o "${DEVICE}" = "RK3566" ]; then
+  if [ "${DEVICE}" = "RK3326" -o "${DEVICE}" = "RK3566" -o "${DEVICE}" = "RK3576" ]; then
     cp -v $(get_pkg_directory generic-dsi)/sources/panel-generic-dsi.c ${PKG_BUILD}/drivers/gpu/drm/panel/
     echo "obj-y" += panel-generic-dsi.o >> ${PKG_BUILD}/drivers/gpu/drm/panel/Makefile
   fi
@@ -205,20 +197,6 @@ pre_make_target() {
 
     ${PKG_BUILD}/scripts/config --set-str CONFIG_EXTRA_FIRMWARE "${FW_LIST}"
     ${PKG_BUILD}/scripts/config --set-str CONFIG_EXTRA_FIRMWARE_DIR "external-firmware"
-  elif [ "${TARGET_ARCH}" = "aarch64" -a "${DEVICE}" = "SDM845" ]; then
-    mkdir -p ${PKG_BUILD}/external-firmware/qcom/sdm845
-      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/a630_gmu.bin ${PKG_BUILD}/external-firmware/qcom
-      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/a630_sqe.fw ${PKG_BUILD}/external-firmware/qcom
-      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/sdm845/a630_zap.mbn ${PKG_BUILD}/external-firmware/qcom/sdm845
-      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/sdm845/mba.mbn ${PKG_BUILD}/external-firmware/qcom/sdm845
-      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/sdm845/modem.mbn ${PKG_BUILD}/external-firmware/qcom/sdm845
-      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/sdm845/adsp.mbn ${PKG_BUILD}/external-firmware/qcom/sdm845
-      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/sdm845/cdsp.mbn ${PKG_BUILD}/external-firmware/qcom/sdm845
-
-    FW_LIST="$(find ${PKG_BUILD}/external-firmware -type f | sed 's|.*external-firmware/||' | sort | xargs)"
-
-    ${PKG_BUILD}/scripts/config --set-str CONFIG_EXTRA_FIRMWARE "${FW_LIST}"
-    ${PKG_BUILD}/scripts/config --set-str CONFIG_EXTRA_FIRMWARE_DIR "external-firmware"
   elif [ "${TARGET_ARCH}" = "aarch64" -a "${DEVICE}" = "H700" ]; then
     mkdir -p ${PKG_BUILD}/external-firmware/rtl_bt
     mkdir -p ${PKG_BUILD}/external-firmware/rtw88
@@ -233,6 +211,7 @@ pre_make_target() {
       cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/panels/anbernic,rg35xx-plus-rev6-panel.panel ${PKG_BUILD}/external-firmware/panels
       cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/panels/anbernic,rg35xx-sp-v2-panel.panel ${PKG_BUILD}/external-firmware/panels
       cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/panels/anbernic,rg40xx-panel.panel ${PKG_BUILD}/external-firmware/panels
+      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/panels/anbernic,rg40xx-v2-panel.panel ${PKG_BUILD}/external-firmware/panels
       cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/panels/anbernic,rgcubexx-panel.panel ${PKG_BUILD}/external-firmware/panels
 
     FW_LIST="$(find ${PKG_BUILD}/external-firmware -type f | sed 's|.*external-firmware/||' | sort | xargs)"
@@ -246,6 +225,19 @@ pre_make_target() {
       cp -Lv ${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/filesystem/usr/lib/kernel-overlays/base/lib/firmware/qcom/gmu_gen70900.bin ${PKG_BUILD}/external-firmware/qcom
     mkdir -p ${PKG_BUILD}/external-firmware/qcom/sm8650/ayaneo/ps2
       cp -Lv ${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/filesystem/usr/lib/kernel-overlays/base/lib/firmware/qcom/sm8650/ayaneo/ps2/gen70900_zap.mbn ${PKG_BUILD}/external-firmware/qcom/sm8650/ayaneo/ps2
+
+    FW_LIST="$(find ${PKG_BUILD}/external-firmware -type f | sed 's|.*external-firmware/||' | sort | xargs)"
+
+    ${PKG_BUILD}/scripts/config --set-str CONFIG_EXTRA_FIRMWARE "${FW_LIST}"
+    ${PKG_BUILD}/scripts/config --set-str CONFIG_EXTRA_FIRMWARE_DIR "external-firmware"
+  elif [ "${TARGET_ARCH}" = "aarch64" -a "${DEVICE}" = "SM8750" ]; then
+    mkdir -p ${PKG_BUILD}/external-firmware/qcom
+      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/gen80000_aqe.fw ${PKG_BUILD}/external-firmware/qcom
+      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/gen80000_sqe.fw ${PKG_BUILD}/external-firmware/qcom
+      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/gen80000_gmu.bin ${PKG_BUILD}/external-firmware/qcom
+
+    mkdir -p ${PKG_BUILD}/external-firmware/qcom/sm8750
+      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/sm8750/gen80000_zap.mbn ${PKG_BUILD}/external-firmware/qcom/sm8750
 
     FW_LIST="$(find ${PKG_BUILD}/external-firmware -type f | sed 's|.*external-firmware/||' | sort | xargs)"
 
@@ -303,7 +295,7 @@ make_target() {
           ;;
       esac
 
-      [[ "${DEVICE}" != "RK3588" && "${DEVICE}" != "SDM845" ]] && export BUILD_BPF_SKEL=0
+      [[ "${DEVICE}" != "RK3588" ]] && export BUILD_BPF_SKEL=0
 
       WERROR=0 \
       NO_LIBPERL=1 \
@@ -370,7 +362,7 @@ makeinstall_target() {
     mkdir -p ${INSTALL}/usr/share/bootloader
     for dtb in arch/${TARGET_KERNEL_ARCH}/boot/dts/**/*.dtb; do
       if [ -f ${dtb} ]; then
-        if [ "${DEVICE}" = "H700" -o "${DEVICE}" = "RK3326" -o "${DEVICE}" = "RK3399" -o "${DEVICE}" = "RK3566" -o "${DEVICE}" = "RK3588" ]; then
+        if [ "${DEVICE}" = "H700" -o "${DEVICE}" = "RK3326" -o "${DEVICE}" = "RK3399" -o "${DEVICE}" = "RK3566" -o "${DEVICE}" = "RK3576" -o "${DEVICE}" = "RK3588" ]; then
           mkdir -p ${INSTALL}/usr/share/bootloader/device_trees
           cp -v ${dtb} ${INSTALL}/usr/share/bootloader/device_trees
         else
