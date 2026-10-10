@@ -6,20 +6,15 @@
   # generated code.
     case ${TARGET_ARCH} in
       aarch64)
-        TARGET_KERNEL_ARCH="arm64"
-        TARGET_KERNEL_PATCH_ARCH="aarch64"
         TARGET_CPU="cortex-a53"
-        TARGET_ARCH_FLAGS="+crc+fp+simd"
-        TARGET_FEATURES="64bit"
+        TARGET_CPU_FLAGS="+crc+fp+simd"
         ;;
       arm)
         TARGET_KERNEL_ARCH="arm64"
-        TARGET_KERNEL_PATCH_ARCH="aarch64"
         TARGET_FLOAT="hard"
         TARGET_CPU="cortex-a53"
-        TARGET_ARCH_FLAGS="+crc"
+        TARGET_CPU_FLAGS="+crc"
         TARGET_FPU="crypto-neon-fp-armv8"
-        TARGET_FEATURES="32bit"
         ;;
     esac
 
@@ -50,12 +45,15 @@
   # For maximum cross compatbility
     PREFER_GLES="yes"
 
+  # Batteryplus voltage-based battery percentage daemon (yes / no)
+    BATTERYPLUS_SUPPORT="yes"
+
   # Displayserver to use (wl / no)
     DISPLAYSERVER="wl"
 
   # Windowmanager to use (weston / swaywm-env / no)
     WINDOWMANAGER="swaywm-env"
-  
+
   # Additional drivers to install:
   # for a list of additional drivers see packages/linux-drivers
   # Space separated list is supported,
@@ -73,6 +71,8 @@
   # Debug tty path
     DEBUG_TTY="/dev/ttyS0"
 
+  # Build and install rocknix out-of-tree device trees and overlays (yes / no)
+    ROCKNIX_DEVICE_TREE_OVERLAYS="yes"
 
   # ZRAM Algorithm
     ZRAM_COMPRESSION_ALGO="lzo-rle"
@@ -82,3 +82,6 @@
 
   # Disk Swap
     SWAP_FILE_SIZE="0"
+
+  # Transparent Huge Pages compaction
+    THP_DEFRAG="defer"

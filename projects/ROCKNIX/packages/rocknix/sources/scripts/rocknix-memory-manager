@@ -67,7 +67,7 @@ fi
 # even with lower RAM.
 IS_HIGH_PERF_SOC=false
 
-if [[ "${HW_DEVICE,,}" =~ rk3588|sm6115|sm8|s922x|g12b|rk3399 ]]; then
+if [[ "${HW_DEVICE,,}" =~ rk3588|sm4450|sm6115|sm8|s922x|g12b|rk3399 ]]; then
     IS_HIGH_PERF_SOC=true
 fi
 
@@ -325,33 +325,7 @@ apply_vm_tuning() {
         sysctl -w vm.compaction_proactiveness=$compaction_val >/dev/null
     fi
 
-    # 3. Transparent Huge Pages
-    # Tiered THP Logic (FS MADVISE Synergy)
-    if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
-        # Default to madvise for all to prevent bloat
-        echo madvise > /sys/kernel/mm/transparent_hugepage/enabled
-        
-        # Enable for Shared Memory (Crucial for Vulkan/Wayland textures)
-        if [ -f /sys/kernel/mm/transparent_hugepage/shmem_enabled ]; then
-            echo advise > /sys/kernel/mm/transparent_hugepage/shmem_enabled
-        fi
-
-        # Budget vs Flagship Defrag Logic
-        # On Budget devices (e.g. H700, RK3326), we use 'defer' so the system 
-        # never stalls while trying to find a contiguous 2MB block.
-        if [ "$IS_LOW_RAM" = true ] && [ "$IS_HIGH_PERF_SOC" = false ]; then
-            echo defer > /sys/kernel/mm/transparent_hugepage/defrag
-            logger -t memory-manager "THP: Budget mode enabled (defrag=defer)"
-        else
-            # Flagship (RK3588, SM8x) or powerful Mid-range (RK3399)
-            # Use defer+madvise to allow some synchronous compaction for 
-            # applications that explicitly think it is worth the performance.
-            echo "defer+madvise" > /sys/kernel/mm/transparent_hugepage/defrag
-            logger -t memory-manager "THP: Flagship mode enabled (defrag=defer+madvise)"
-        fi
-    fi
-
-    # 4. VM Overcommit Memory
+    # 3. VM Overcommit Memory
     local overcommit_val=0
     if [[ "${VM_OVERCOMMIT,,}" == "auto" ]]; then
         if [ "$IS_HIGH_PERF_SOC" = true ]; then
@@ -383,9 +357,9 @@ apply_tuning() {
         sysctl -w vm.swappiness=100 >/dev/null
         sysctl -w vm.page-cluster=0 >/dev/null
         
-        if [ -n "$SECONDARY_ALGO" ] && [ -f /sys/block/zram0/recompress ]; then
-            if grep -q "$SECONDARY_ALGO" /sys/block/zram0/comp_algorithm; then
-                 echo "algo=$SECONDARY_ALGO priority=1" > /sys/block/zram0/recompress 2>/dev/null
+        if [ -n "$SECONDARY_ALGO" ] && [ -f /sys/block/zram0/recomp_algorithm ]; then
+            if ! grep -q "$SECONDARY_ALGO" /sys/block/zram0/recomp_algorithm; then
+                logger -t memory-manager "ZRAM secondary algorithm $SECONDARY_ALGO is not registered"
             fi
         fi
     elif [ "$SWAP_SIZE_VAL" -gt 0 ]; then
@@ -399,7 +373,7 @@ perform_optimization() {
     # 1. ZRAM Recompression (if Hybrid Tiering is active)
     if [ "$ZRAM_SIZE_VAL" -gt 0 ] && [ -n "$SECONDARY_ALGO" ] && [ -f /sys/block/zram0/recompress ]; then
         logger -t memory-manager "Optimizing: Triggering ZRAM recompression ($SECONDARY_ALGO)..."
-        if grep -q "$SECONDARY_ALGO" /sys/block/zram0/comp_algorithm; then
+        if grep -q "$SECONDARY_ALGO" /sys/block/zram0/recomp_algorithm 2>/dev/null; then
              # Recompress huge/idle pages to secondary algo
              echo "algo=$SECONDARY_ALGO type=huge_idle" > /sys/block/zram0/recompress 2>/dev/null
         fi
@@ -433,10 +407,19 @@ setup_zram() {
     
     local algo_path="/sys/block/zram0/comp_algorithm"
     [ -f "$algo_path" ] && echo "$PRIMARY_ALGO" > "$algo_path" 2>/dev/null
+
+    # The secondary algorithm must be registered before disksize initialises the device
+    if [ -n "$SECONDARY_ALGO" ] && [ -f /sys/block/zram0/recomp_algorithm ] && \
+       grep -q "$SECONDARY_ALGO" "$algo_path" 2>/dev/null; then
+        echo "algo=$SECONDARY_ALGO priority=1" > /sys/block/zram0/recomp_algorithm 2>/dev/null
+    fi
     
     echo $((ZRAM_SIZE_VAL * 1024 * 1024)) > /sys/block/zram0/disksize
     mkswap /dev/zram0 >/dev/null
     swapon -p 100 /dev/zram0
+
+    # zswap in front of zram compresses every page twice
+    [ -w /sys/module/zswap/parameters/enabled ] && echo N > /sys/module/zswap/parameters/enabled
 }
 
 setup_swapfile() {

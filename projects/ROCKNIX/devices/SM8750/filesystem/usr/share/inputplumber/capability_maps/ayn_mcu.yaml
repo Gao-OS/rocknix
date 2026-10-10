@@ -83,15 +83,14 @@ mapping:
       gamepad:
         button: Select
 
-  - name: QuickAccess2 Button
+  - name: F1 Key
     source_events:
       - evdev:
           event_type: KEY
           event_code: BTN_BACK
           value_type: button
     target_event:
-      gamepad:
-        button: QuickAccess2
+      keyboard: KeyF1
 
   - name: Right Trigger
     source_events:
@@ -143,7 +142,7 @@ mapping:
           value_type: button
     target_event:
       gamepad:
-        button: RightPaddle1
+        button: RightPaddle2
 
   - name: Left Paddle
     source_events:
@@ -153,7 +152,7 @@ mapping:
           value_type: button
     target_event:
       gamepad:
-        button: LeftPaddle1
+        button: LeftPaddle2
 
   - name: Right Stick
     source_events:

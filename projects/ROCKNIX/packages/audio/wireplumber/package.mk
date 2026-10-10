@@ -2,7 +2,8 @@
 # Copyright (C) 2022-present Team LibreELEC (https://libreelec.tv)
 
 PKG_NAME="wireplumber"
-PKG_VERSION="0.5.7"
+PKG_VERSION="0.5.15"
+PKG_SHA256="baa121bc918df5fa0e0e70755bb1c99ffab0ab107225ecf99aa470e2c6ba5e7b"
 PKG_LICENSE="MIT"
 PKG_SITE="https://gitlab.freedesktop.org/pipewire/wireplumber"
 PKG_URL="https://gitlab.freedesktop.org/pipewire/wireplumber/-/archive/${PKG_VERSION}/${PKG_NAME}-${PKG_VERSION}.tar.gz"
@@ -20,6 +21,9 @@ PKG_MESON_OPTS_TARGET="-Dintrospection=disabled \
                        -Dtests=false"
 
 post_makeinstall_target() {
+  mkdir -p ${INSTALL}/etc
+  ln -sf /storage/.config/wireplumber ${INSTALL}/etc/wireplumber
+
   # connect to the system bus
   sed '/^\[Service\]/a Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket' -i ${INSTALL}/usr/lib/systemd/system/wireplumber.service
 
@@ -90,6 +94,11 @@ monitor.bluez.rules = [
   }
 ]
 EOF
+
+# Platform-specific config files
+if [ -d "${PKG_DIR}/config/${DEVICE}" ]; then 
+  cp -f ${PKG_DIR}/config/${DEVICE}/*.conf ${INSTALL}/usr/share/wireplumber/wireplumber.conf.d/
+fi
 }
 
 post_install() {

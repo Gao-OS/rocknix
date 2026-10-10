@@ -34,6 +34,10 @@ kconfig-olddefconfig-%:
 kconfig-menuconfig-%:
 	DEVICE=$* ./tools/adjust_kernel_config menuconfig
 
+AMD64:
+	unset DEVICE_ROOT
+	PROJECT=ROCKNIX DEVICE=AMD64 ARCH=x86_64 ./scripts/build_distro
+
 RK3588:
 	unset DEVICE_ROOT
 	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=RK3588 ARCH=arm ./scripts/build_distro
@@ -68,6 +72,11 @@ H700:
 	unset DEVICE_ROOT
 	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=H700 ARCH=arm ./scripts/build_distro
 	DISTRO=GaoOS PROJECT=ROCKNIX DEVICE=H700 ARCH=aarch64 ./scripts/build_distro
+
+SM4450:
+	unset DEVICE_ROOT
+	PROJECT=ROCKNIX DEVICE=SM4450 ARCH=arm ./scripts/build_distro
+	PROJECT=ROCKNIX DEVICE=SM4450 ARCH=aarch64 ./scripts/build_distro
 
 SM6115:
 	unset DEVICE_ROOT

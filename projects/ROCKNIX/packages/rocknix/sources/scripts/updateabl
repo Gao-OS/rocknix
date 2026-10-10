@@ -4,10 +4,22 @@
 #
 # This script will update the ABL on the internal eMMC/UFS.
 
+if [ -n "$SYSTEM_ROOT" ]; then
+  ROOT=$SYSTEM_ROOT
+  mount --bind /dev $ROOT/dev
+  mount --bind /proc $ROOT/proc
+  mount --bind /sys $ROOT/sys
+  mount -t tmpfs tmpfs $ROOT/tmp
+  SYSTEM_ROOT="" chroot $ROOT /usr/bin/updateabl
+  RC=$?
+  umount $ROOT/tmp $ROOT/sys $ROOT/proc $ROOT/dev
+  exit $RC
+fi
+
 . $SYSTEM_ROOT/etc/os-release
 
 case "$HW_DEVICE" in
-  SM6115|SM8250|SM8550|SM8650|SM8750)
+  SM4450|SM6115|SM8250|SM8550|SM8650|SM8750)
     ;;
   *)
     echo "This script is not compatible with this device!"
@@ -25,6 +37,8 @@ if [ ! -f "${ELF}" ]; then
   echo "Error: ABL update not found"
   exit 1
 fi
+
+$SYSTEM_ROOT/usr/sbin/partprobe
 
 ABL_A="$($SYSTEM_ROOT/usr/sbin/blkid -t PARTLABEL=abl_a -o device)"
 ABL_B="$($SYSTEM_ROOT/usr/sbin/blkid -t PARTLABEL=abl_b -o device)"
@@ -54,9 +68,9 @@ SUM_A="$($SYSTEM_ROOT/usr/bin/sha256sum "${TMP_ABL_A}" | awk '{print $1}')"
 SUM_B="$($SYSTEM_ROOT/usr/bin/sha256sum "${TMP_ABL_B}" | awk '{print $1}')"
 SUM_UPDATE="$($SYSTEM_ROOT/usr/bin/sha256sum "${ELF}" | awk '{print $1}')"
 
-echo "Checksum abl_a: ${SUM_A}"
-echo "Checksum abl_b: ${SUM_B}"
-echo "Checksum update: ${SUM_UPDATE}"
+echo "Checksum abl_a: ${SUM_A:0:7}"
+echo "Checksum abl_b: ${SUM_B:0:7}"
+echo "Checksum update: ${SUM_UPDATE:0:7}"
 
 # ---- Compare ----
 if [ "${SUM_A}" = "${SUM_UPDATE}" ] && [ "${SUM_B}" = "${SUM_UPDATE}" ]; then

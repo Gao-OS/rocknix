@@ -348,7 +348,11 @@ EOF
 function configure_hotkeys() {
     log "Configure hotkeys..."
     local MY_CONTROLLER
-    if grep -q "js0" /proc/bus/input/devices; then
+
+    if grep -q "Sony Interactive Entertainment DualSense Wireless Controller" /proc/bus/input/devices; then
+        # InputPlumber virtual DS5
+        MY_CONTROLLER="Sony Interactive Entertainment DualSense Wireless Controller"
+    elif grep -q "js0" /proc/bus/input/devices; then
         MY_CONTROLLER=$(grep -b4 js0 /proc/bus/input/devices | awk 'BEGIN {FS="\""}; /Name/ {printf $2}')
     else
         MY_CONTROLLER=$(grep -b4 joypad /proc/bus/input/devices | awk 'BEGIN {FS="\""}; /Name/ {printf $2}')
@@ -803,7 +807,7 @@ function set_autosave() {
             esac
         ;;
     esac
-    
+
     add_setting "none" "savestate_directory" "${SNAPSHOTS}/${PLATFORM}"
     if [ ! -d "${SNAPSHOTS}/${PLATFORM}" ]
     then
@@ -990,6 +994,18 @@ function set_dreamcastopts() {
     fi
 }
 
+function set_melondsds_opt() {
+    local OPT_FILE="${1}"
+    local OPT_KEY="${2}"
+    local OPT_VALUE="${3}"
+    if grep -q "^${OPT_KEY} = " "${OPT_FILE}"
+    then
+        sed -i "/^${OPT_KEY} = /c\\${OPT_KEY} = \"${OPT_VALUE}\"" "${OPT_FILE}"
+    else
+        echo "${OPT_KEY} = \"${OPT_VALUE}\"" >>"${OPT_FILE}"
+    fi
+}
+
 function set_melondsdsopts() {
     log "Set up melonDS DS..."
     if [ "${CORE}" = "melondsds" ]
@@ -999,7 +1015,7 @@ function set_melondsdsopts() {
         then
             mkdir -p "${MELONDSDSDIR}"
         fi
-        
+
         if [ ! -f "${MELONDSDSDIR}/melonDS DS.opt" ]
         then
             cat <<EOF >"${MELONDSDSDIR}/melonDS DS.opt"
@@ -1008,6 +1024,42 @@ melonds_console_mode = "ds"
 melonds_show_cursor = "timeout"
 melonds_touch_mode = "auto"
 EOF
+        fi
+
+        local FIT_SCALE="" FIT_GAP="" FIT_WIDTH="" FIT_HEIGHT=""
+        case "${QUIRK_DEVICE}" in
+            "AYN Thor"|"AYN Thor Lite"|"Retroid Pocket Mini V2")
+                ### 1240x1080 bottom panel
+                FIT_SCALE="85"
+                FIT_GAP="15"
+                FIT_WIDTH="1440"
+                FIT_HEIGHT="2079"
+                ;;
+            "Retroid Pocket Mini")
+                ### 1240x930 bottom panel, the secondary screen nearly fills it
+                FIT_SCALE="85"
+                FIT_GAP="1"
+                FIT_WIDTH="1440"
+                FIT_HEIGHT="2004"
+                ;;
+        esac
+
+        if [ -n "${FIT_SCALE}" ]
+        then
+            local SCREEN_SIZING="$(get_setting "screen_sizing" "${PLATFORM}" "${ROM}")"
+            if [ "${SCREEN_SIZING}" = "1" ]
+            then
+                set_melondsds_opt "${MELONDSDSDIR}/melonDS DS.opt" "melonds_secondary_screen_scale" "100"
+                set_melondsds_opt "${MELONDSDSDIR}/melonDS DS.opt" "melonds_screen_gap" "0"
+            else
+                set_melondsds_opt "${MELONDSDSDIR}/melonDS DS.opt" "melonds_secondary_screen_scale" "${FIT_SCALE}"
+                set_melondsds_opt "${MELONDSDSDIR}/melonDS DS.opt" "melonds_screen_gap" "${FIT_GAP}"
+                add_setting "none" "aspect_ratio_index" "23"
+                add_setting "none" "custom_viewport_height" "${FIT_HEIGHT}"
+                add_setting "none" "custom_viewport_width" "${FIT_WIDTH}"
+                add_setting "none" "video_viewport_bias_x" "0.500000"
+                add_setting "none" "video_viewport_bias_y" "-0.000000"
+            fi
         fi
 
         if [ "${PLATFORM}" = "ndsiware" ]
@@ -1287,11 +1339,11 @@ set_n64opts &
 set_saturnopts &
 set_snesopts &
 set_dreamcastopts &
-set_melondsdsopts &
 
 ### Sed operations are expensive, so they are staged and executed as
 ### a single process when all forks complete.
 wait
+set_melondsdsopts
 flush_settings
 
 cleanup

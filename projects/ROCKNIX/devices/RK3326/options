@@ -6,20 +6,15 @@
   # generated code.
     case ${TARGET_ARCH} in
       aarch64)
-        TARGET_KERNEL_ARCH="arm64"
-        TARGET_KERNEL_PATCH_ARCH="aarch64"
         TARGET_CPU="cortex-a35"
-        TARGET_ARCH_FLAGS="+crc+fp+simd"
-        TARGET_FEATURES="64bit"
+        TARGET_CPU_FLAGS="+crc+fp+simd"
         ;;
       arm)
         TARGET_KERNEL_ARCH="arm64"
-        TARGET_KERNEL_PATCH_ARCH="aarch64"
         TARGET_FLOAT="hard"
         TARGET_CPU="cortex-a35"
-        TARGET_ARCH_FLAGS="+crc"
+        TARGET_CPU_FLAGS="+crc"
         TARGET_FPU="crypto-neon-fp-armv8"
-        TARGET_FEATURES="32bit"
         ;;
     esac
 
@@ -48,6 +43,15 @@
   # For maximum cross compatbility
     PREFER_GLES="yes"
 
+  # VULKAN_SUPPORT
+    VULKAN_SUPPORT="yes"
+
+  # Vulkan implementation to use (vulkan-loader / no)
+    VULKAN="vulkan-loader"
+
+  # Batteryplus voltage-based battery percentage daemon (yes / no)
+    BATTERYPLUS_SUPPORT="no"
+
   # Displayserver to use (wl / no)
     DISPLAYSERVER="wl"
 
@@ -58,7 +62,7 @@
   # for a list of additional drivers see packages/linux-drivers
   # Space separated list is supported,
   # e.g. ADDITIONAL_DRIVERS="DRIVER1 DRIVER2"
-    ADDITIONAL_DRIVERS="RTL8812AU RTL8814AU RTL8821AU RTL8821CU RTL88x2BU RTL8851BU mali-bifrost"
+    ADDITIONAL_DRIVERS="mali-bifrost"
 
   # Additional Firmware to use ( )
   # Space separated list is supported,
@@ -80,3 +84,6 @@
 
   # Disk Swap
     SWAP_FILE_SIZE="0"
+
+  # Transparent Huge Pages compaction
+    THP_DEFRAG="defer"

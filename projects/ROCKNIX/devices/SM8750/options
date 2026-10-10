@@ -4,11 +4,8 @@
 
   # The TARGET_CPU variable controls which processor should be targeted for
   # generated code.
-    TARGET_KERNEL_ARCH="arm64"
-    TARGET_KERNEL_PATCH_ARCH="aarch64"
     TARGET_CPU="cortex-x4"
-    TARGET_ARCH_FLAGS="+fp16+crypto+i8mm+bf16+memtag+sm4+sha3+nosve"
-    TARGET_FEATURES="64bit"
+    TARGET_CPU_FLAGS="+fp16+crypto+i8mm+bf16+memtag+sm4+sha3+nosve+nosve2"
 
     PARTITION_TABLE="gpt"
     HW_CPU="Snapdragon 8 elite Gen 1"
@@ -21,7 +18,7 @@
     KERNEL_MAKE_EXTRACMD=" $(get_kernel_make_extracmd)"
 
   # Kernel cmdline
-    EXTRA_CMDLINE="rootwait quiet video=efifb:off console=tty0 irqaffinity=0-1 cgroup.memory=nokmem,nosocket nosoftlockup"
+    EXTRA_CMDLINE="rootwait quiet video=efifb:off console=tty0 irqaffinity=0-1 cgroup.memory=nokmem,nosocket nosoftlockup gpt"
 
   # Bootloader to use (syslinux / u-boot)
     BOOTLOADER="qcom-abl"
