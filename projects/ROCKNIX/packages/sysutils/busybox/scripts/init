@@ -282,8 +282,18 @@ mount_sysroot() {
   if [ -n "${GAOOS_SLOT}" ]; then
     # GaoOS A/B boot: mount raw SquashFS partition directly
     progress "Mounting A/B slot ${GAOOS_SLOT}"
-    # Use gaoos.dev= from cmdline if available, fall back to mmcblk0
-    GAOOS_BOOT_DEV="${GAOOS_DEV:-mmcblk0}"
+    # Linux MMC numbering can differ from U-Boot. Use the disk actually mounted
+    # at /flash rather than the gaoos.dev hint from the bootloader.
+    GAOOS_FLASH_DEV=$(awk '$2 == "/flash" { print $1; exit }' /proc/mounts)
+    GAOOS_FLASH_DEV=$(readlink -f "${GAOOS_FLASH_DEV}")
+    case "${GAOOS_FLASH_DEV}" in
+      /dev/mmcblk*p1|/dev/loop*p1|/dev/nvme*p1)
+        GAOOS_BOOT_DEV="${GAOOS_FLASH_DEV%p1}" ;;
+      /dev/sd*1)
+        GAOOS_BOOT_DEV="${GAOOS_FLASH_DEV%1}" ;;
+      *) error "mount_sysroot" "Cannot identify A/B boot disk from ${GAOOS_FLASH_DEV}"; return 1 ;;
+    esac
+    GAOOS_BOOT_DEV="${GAOOS_BOOT_DEV#/dev/}"
     # Construct partition device path (handles mmcblk0p2 vs sda2 naming)
     case "${GAOOS_BOOT_DEV}" in
       mmcblk*|loop*|nvme*) PART_SEP="p" ;;

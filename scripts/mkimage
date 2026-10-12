@@ -23,7 +23,7 @@ DISK_GPT_PADDING=1
 
 if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
   BOOT_SIZE="${BOOT_SIZE:-256}"
-  SLOT_SIZE="${SLOT_SIZE:-768}"
+  SLOT_SIZE="${SLOT_SIZE:-1536}"
   DISK_SIZE=$((${DISK_START_PADDING} + ${BOOT_SIZE} + ${SLOT_SIZE} * 2 + ${STORAGE_SIZE} + ${DISK_GPT_PADDING}))
 else
   DISK_SIZE=$((${DISK_START_PADDING} + ${SYSTEM_SIZE} + ${STORAGE_SIZE} + ${DISK_GPT_PADDING}))
@@ -54,6 +54,17 @@ show_error() {
 }
 
 trap cleanup SIGINT
+
+# Check capacity before creating or formatting any image partitions.
+if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
+  # Validate image fits in slot
+  SQUASHFS_SIZE=$(stat -c %s "${TARGET_IMG}/${BUILD_NAME}.system" 2>"${SAVE_ERROR}") || show_error
+  SLOT_BYTES=$((SLOT_SIZE * 1024 * 1024))
+  if [ "${SQUASHFS_SIZE}" -gt "${SLOT_BYTES}" ]; then
+    echo "ERROR: SquashFS image (${SQUASHFS_SIZE} bytes) exceeds slot size (${SLOT_BYTES} bytes)!"
+    show_error
+  fi
+fi
 
 # create an image
 echo -e "\nimage: creating sparse file for disk image ${DISK##*/}..."
@@ -284,10 +295,12 @@ elif [ "${BOOTLOADER}" = "u-boot" ]; then
     echo "image: A/B mode -- SYSTEM goes to slot partition, not boot partition"
 
     # Copy boot.scr for A/B slot selection
-    if [ -f "${RELEASE_DIR}/3rdparty/bootloader/boot.scr" ]; then
-      echo "image: copying A/B boot.scr..."
-      mcopy "${RELEASE_DIR}/3rdparty/bootloader/boot.scr" ::/boot.scr >"${SAVE_ERROR}" 2>&1 || show_error
+    if [ ! -s "${RELEASE_DIR}/3rdparty/bootloader/boot.scr" ]; then
+      echo "ERROR: A/B boot.scr is missing from the release bootloader directory!"
+      show_error
     fi
+    echo "image: copying A/B boot.scr..."
+    mcopy "${RELEASE_DIR}/3rdparty/bootloader/boot.scr" ::/boot.scr >"${SAVE_ERROR}" 2>&1 || show_error
 
     # Write initial ab_state.env
     cat <<ABEOF >"${IMG_TMP}/ab_state.env"
@@ -355,13 +368,6 @@ dd if="${IMG_TMP}/part1.fat" of="${DISK}" bs=512 seek="${SYSTEM_PART_START}" con
 if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
   echo "image: writing SquashFS to slot_a (p2) at sector ${SLOT_A_PART_START}..."
 
-  # Validate image fits in slot
-  SQUASHFS_SIZE=$(stat -c %s "${TARGET_IMG}/${BUILD_NAME}.system")
-  SLOT_BYTES=$((SLOT_SIZE * 1024 * 1024))
-  if [ "${SQUASHFS_SIZE}" -gt "${SLOT_BYTES}" ]; then
-    echo "ERROR: SquashFS image (${SQUASHFS_SIZE} bytes) exceeds slot size (${SLOT_BYTES} bytes)!"
-    show_error
-  fi
   echo "image: SquashFS size: ${SQUASHFS_SIZE} bytes, slot capacity: ${SLOT_BYTES} bytes"
 
   dd if="${TARGET_IMG}/${BUILD_NAME}.system" of="${DISK}" bs=512 seek="${SLOT_A_PART_START}" conv=fsync,notrunc >"${SAVE_ERROR}" 2>&1 || show_error

@@ -30,6 +30,24 @@ mkimage_uboot() {
 }
 
 mkimage_extlinux() {
+  if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
+    # Standard boot tries extlinux before scripts. A/B images must enter boot.scr.
+    local gaoos_fdt=""
+    local gaoos_fdtdir="device_trees"
+    if [ "$(get_fdt_type)" = "FDT" ]; then
+      gaoos_fdt="$(get_fdt)"
+    else
+      gaoos_fdtdir="$(get_fdt)"
+    fi
+    cat <<EOF > "${IMG_TMP}/gaoos_boot.env"
+extra_cmdline=${EXTRA_CMDLINE}
+gaoos_fdt=${gaoos_fdt}
+gaoos_fdtdir=${gaoos_fdtdir}
+gaoos_overlays=$(get_fdt_overlays)
+EOF
+    mcopy "${IMG_TMP}/gaoos_boot.env" ::/gaoos_boot.env >"${SAVE_ERROR}" 2>&1 || show_error
+    return
+  fi
   if [ -d "${RELEASE_DIR}/3rdparty/bootloader/extlinux" ]; then
     echo "image: copying custom extlinux.conf..."
     mcopy -s -o "${RELEASE_DIR}/3rdparty/bootloader/extlinux" ::

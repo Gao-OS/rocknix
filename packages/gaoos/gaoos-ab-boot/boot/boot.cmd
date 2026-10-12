@@ -12,6 +12,14 @@ echo "GaoOS A/B Boot"
 setenv bootlabel "GAOOS"
 setenv storagelabel "STORAGE"
 
+# Import build metadata without changing the board-selected Generic fdtfile.
+if load ${devtype} ${devnum}:1 ${scriptaddr} gaoos_boot.env; then
+    env import -t ${scriptaddr} ${filesize} extra_cmdline gaoos_fdt gaoos_fdtdir gaoos_overlays
+else
+    echo "AB: boot metadata missing"
+    exit
+fi
+
 # ── Load A/B state from boot partition ──────────────────────────
 if load ${devtype} ${devnum}:1 ${scriptaddr} ab_state.env; then
     env import -t ${scriptaddr} ${filesize}
@@ -101,34 +109,49 @@ fi
 
 # ── Persist updated state back to FAT partition ────────────────
 env export -t ${scriptaddr} active_slot status_a status_b retry_a retry_b max_retries
-save ${devtype} ${devnum}:1 ${scriptaddr} ab_state.env ${filesize}
+if save ${devtype} ${devnum}:1 ${scriptaddr} ab_state.env ${filesize}; then
+    echo "AB: state persisted"
+else
+    echo "AB: failed to persist state; refusing an uncounted boot"
+    exit
+fi
 
 # ── Load kernel ────────────────────────────────────────────────
 echo "AB: booting slot ${boot_slot} (partition ${boot_partnum})"
-load ${devtype} ${devnum}:1 ${kernel_addr_r} KERNEL
+if load ${devtype} ${devnum}:1 ${kernel_addr_r} KERNEL; then
+    echo "AB: kernel loaded"
+else
+    echo "AB: failed to load kernel"
+    exit
+fi
 
 # ── Load device tree ───────────────────────────────────────────
-if test -d ${devtype} ${devnum}:1 device_trees; then
-    if test -n "${fdtfile}"; then
-        load ${devtype} ${devnum}:1 ${fdt_addr_r} device_trees/${fdtfile}
-    else
-        echo "AB: fdtfile not set, trying FDTDIR via sysboot fallback"
-        # Fall back to extlinux for DTB selection on generic devices
-        sysboot ${devtype} ${devnum}:1 any ${scriptaddr} /extlinux/extlinux.conf
-    fi
+if test -z "${gaoos_fdt}"; then
+    # Generic U-Boot detects the board; accept both bare and vendor-prefixed names.
+    setexpr gaoos_dtb sub "^.*/" "" "${fdtfile}"
+    setenv gaoos_fdt ${gaoos_fdtdir}/${gaoos_dtb}
+fi
+if test -z "${gaoos_fdt}"; then
+    echo "AB: no device tree selected"
+    exit
+fi
+if load ${devtype} ${devnum}:1 ${fdt_addr_r} ${gaoos_fdt}; then
+    fdt addr ${fdt_addr_r}
 else
-    echo "AB: no device_trees dir, trying sysboot fallback"
-    sysboot ${devtype} ${devnum}:1 any ${scriptaddr} /extlinux/extlinux.conf
+    echo "AB: failed to load ${gaoos_fdt}"
+    exit
 fi
 
 # ── Load device tree overlays if present ───────────────────────
-if test -e ${devtype} ${devnum}:1 overlays; then
-    fdt addr ${fdt_addr_r}
+if test -n "${gaoos_overlays}"; then
     fdt resize 65536
-    for overlay in ${dto}; do
-        echo "AB: applying overlay ${overlay}"
-        load ${devtype} ${devnum}:1 ${fdtoverlay_addr_r} overlays/${overlay}
-        fdt apply ${fdtoverlay_addr_r}
+    for overlay in ${gaoos_overlays}; do
+        if load ${devtype} ${devnum}:1 ${fdtoverlay_addr_r} overlays/${overlay}; then
+            fdt apply ${fdtoverlay_addr_r}
+        else
+            echo "AB: failed to load overlay ${overlay}"
+            exit
+        fi
     done
 fi
 

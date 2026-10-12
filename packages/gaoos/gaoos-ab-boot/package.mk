@@ -7,12 +7,23 @@ PKG_LICENSE="GPL"
 PKG_SITE="https://github.com/Gao-OS/rocknix"
 PKG_URL=""
 PKG_DEPENDS_TARGET="toolchain u-boot-tools:host"
+if [ "${DEVICE}" = "RK3566" ]; then
+  # RK3566's u-boot is a virtual package (version 1.0, no source archive).
+  # Its Generic build already supplies a native mkimage tool.
+  PKG_DEPENDS_TARGET="toolchain u-boot-Generic"
+fi
+# Install upstream scripts before overriding their update entry points.
+PKG_DEPENDS_TARGET+=" rocknix"
 PKG_LONGDESC="GaoOS A/B dual-slot boot system with atomic, rollback-safe OTA updates"
 PKG_TOOLCHAIN="manual"
 
 make_target() {
   # Compile boot.cmd → boot.scr for U-Boot A/B slot selection
-  ${TOOLCHAIN}/bin/mkimage -C none -A ${TARGET_KERNEL_ARCH} -T script \
+  local mkimage_tool="${TOOLCHAIN}/bin/mkimage"
+  if [ "${DEVICE}" = "RK3566" ]; then
+    mkimage_tool="$(get_build_dir u-boot-Generic)/tools/mkimage"
+  fi
+  "${mkimage_tool}" -C none -A ${TARGET_KERNEL_ARCH} -T script \
     -d ${PKG_DIR}/boot/boot.cmd ${PKG_BUILD}/boot.scr
 }
 

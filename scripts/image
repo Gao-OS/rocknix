@@ -50,7 +50,7 @@ function do_mkimage() {
     SUBDEVICE="${SUBDEVICE}" \
     GAOOS_AB_BOOT="${GAOOS_AB_BOOT}" \
     BOOT_SIZE="${BOOT_SIZE:-256}" \
-    SLOT_SIZE="${SLOT_SIZE:-768}" \
+    SLOT_SIZE="${SLOT_SIZE:-1536}" \
     ${SCRIPTS}/mkimage
 }
 
@@ -299,6 +299,15 @@ if [ "${1}" = "release" ] || [ "${1}" = "mkimage" ] || [ "${1}" = "noobs" ]; the
   mkdir -p ${RELEASE_DIR}/target
   cp ${TARGET_IMG}/${IMAGE_NAME}.system ${RELEASE_DIR}/target/SYSTEM
   cp ${TARGET_IMG}/${IMAGE_NAME}.kernel ${RELEASE_DIR}/target/KERNEL
+
+  # Retain the raw A/B update payload independently of the disposable release dir.
+  if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
+    cp "${TARGET_IMG}/${IMAGE_NAME}.system" "${TARGET_IMG}/${IMAGE_NAME}.squashfs"
+    (
+      cd "${TARGET_IMG}"
+      sha256sum "${IMAGE_NAME}.squashfs" >"${IMAGE_NAME}.squashfs.sha256"
+    )
+  fi
 
   # Create md5sum's
   (
