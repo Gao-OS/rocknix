@@ -199,7 +199,7 @@ jobs:
   release-nightly:
      if: ${{ always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.repository_owner == 'Gao-OS' && needs.set-envs.outputs.NIGHTLY == 'yes' && github.event_name != 'pull_request' }}
      name: Release nightly
-     needs: build-devices
+     needs: [set-envs, build-devices]
      runs-on: ubuntu-24.04
      steps:
      - name: debug needs
@@ -233,28 +233,7 @@ jobs:
        run: echo "DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
      - name: Generate update manifests
        run: |
-         TAG="nightly-${{ env.DATE }}"
-         for img in GaoOS-*.img.gz; do
-           [ -f "$img" ] || continue
-           # Extract device name: GaoOS-RK3566.aarch64-DATE-variant.img.gz → RK3566
-           DEVICE=$(echo "$img" | sed -n 's/^GaoOS-\([^.]*\)\..*/\1/p')
-           [ -z "$DEVICE" ] && continue
-           # Skip if manifest already exists for this device (first variant wins)
-           [ -f "manifest-${DEVICE}.json" ] && continue
-           SHA=$(sha256sum "$img" | awk '{print $1}')
-           SIZE=$(stat -c %s "$img")
-           cat > "manifest-${DEVICE}.json" <<MANIFEST
-         {
-           "version": "${{ env.DATE }}",
-           "device": "${DEVICE}",
-           "url": "https://github.com/Gao-OS/rocknix/releases/download/${TAG}/${img}",
-           "sha256": "${SHA}",
-           "size_bytes": ${SIZE},
-           "changelog_url": "https://github.com/Gao-OS/rocknix/releases/tag/${TAG}"
-         }
-         MANIFEST
-           echo "Generated manifest-${DEVICE}.json"
-         done
+         bash .github/scripts/generate-update-manifests.sh "${{ env.DATE }}" "nightly-${{ env.DATE }}"
      - name: Create nightly tag and changelog
        id: create-nightly-tag
        run: |
@@ -284,7 +263,7 @@ jobs:
   release-official:
     if: ${{ always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.repository_owner == 'Gao-OS' && needs.set-envs.outputs.OFFICIAL == 'yes' }}
     name: Release official
-    needs: build-devices
+    needs: [set-envs, build-devices]
     runs-on: ubuntu-24.04
     steps:
       - name: Maximize build space
@@ -320,26 +299,7 @@ jobs:
           echo "TAG=$(git tag --sort=-creatordate | head -n 1)" >> $GITHUB_OUTPUT
       - name: Generate update manifests
         run: |
-          TAG="${{ env.DATE }}"
-          for img in GaoOS-*.img.gz; do
-            [ -f "$img" ] || continue
-            DEVICE=$(echo "$img" | sed -n 's/^GaoOS-\([^.]*\)\..*/\1/p')
-            [ -z "$DEVICE" ] && continue
-            [ -f "manifest-${DEVICE}.json" ] && continue
-            SHA=$(sha256sum "$img" | awk '{print $1}')
-            SIZE=$(stat -c %s "$img")
-            cat > "manifest-${DEVICE}.json" <<MANIFEST
-          {
-            "version": "${TAG}",
-            "device": "${DEVICE}",
-            "url": "https://github.com/Gao-OS/rocknix/releases/download/${TAG}/${img}",
-            "sha256": "${SHA}",
-            "size_bytes": ${SIZE},
-            "changelog_url": "https://github.com/Gao-OS/rocknix/releases/tag/${TAG}"
-          }
-          MANIFEST
-            echo "Generated manifest-${DEVICE}.json"
-          done
+          bash .github/scripts/generate-update-manifests.sh "${{ env.DATE }}" "${{ env.DATE }}"
       - name: Install xmlstarlet
         run: sudo apt-get install -y xmlstarlet
       - name: Generate release body

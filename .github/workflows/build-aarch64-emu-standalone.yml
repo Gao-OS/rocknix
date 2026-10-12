@@ -17,6 +17,7 @@ jobs:
   build-aarch64-emu-standalone:
     runs-on: ubuntu-24.04
     env:
+      DISTRO: GaoOS
       EMULATION_DEVICE: no
       ENABLE_32BIT: no
       TARGET_TYPE: emus_only
@@ -161,21 +162,21 @@ jobs:
           name: output.logs (${{ inputs.DEVICE }}-aarch64-emu-standalone)
           path: |
             output.log
-            ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/.threads/logs/
+            ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/.threads/logs/
 
       - name: Clean ccache
         run: |
-          export CCACHE_DIR=./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/.ccache
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -s -v
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -M 4.5G
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -c
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -c
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -s -v
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -z
+          export CCACHE_DIR=./build.GaoOS-${{ inputs.DEVICE }}.aarch64/.ccache
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -s -v
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -M 4.5G
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -c
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -c
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -s -v
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -z
 
       - name: Tar ccache
         run: |
-          tar --remove-files -cf - ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/.ccache \
+          tar --remove-files -cf - ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/.ccache \
             | split -b 1900m - ccache-aarch64-${{ inputs.DEVICE }}-emu-standalone.tar.part-
 
       - name: Save ccache
@@ -196,9 +197,9 @@ jobs:
       - name: Compress directory
         run: |
           sudo tar --remove-files -cf - \
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/install_* \
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/.stamps \
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/toolchain  | split -b 2G -  build.emu-standalone.tar.part
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/install_* \
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/.stamps \
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/toolchain  | split -b 2G -  build.emu-standalone.tar.part
 
       - uses: actions/upload-artifact@v7
         with:

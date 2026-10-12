@@ -19,6 +19,7 @@ jobs:
       || inputs.DEVICE == 'SM8250' || inputs.DEVICE == 'SM8550' || inputs.DEVICE == 'SM8650' || inputs.DEVICE == 'SM8750' || inputs.DEVICE == 'SM6115' || inputs.DEVICE == 'SM4450' }}
     runs-on: ubuntu-24.04
     env:
+      DISTRO: GaoOS
       EMULATION_DEVICE: no
       ENABLE_32BIT: no
       TARGET_TYPE: emus_only
@@ -86,20 +87,20 @@ jobs:
           name: output.logs (${{ inputs.DEVICE }}-aarch64-qt6)
           path: |
             output.log
-            ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/.threads/logs/
+            ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/.threads/logs/
 
       - name: Clean ccache
         run: |
-          export CCACHE_DIR=./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/.ccache
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -s -v
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -M 2.0G
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -c
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -s -v
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -z
+          export CCACHE_DIR=./build.GaoOS-${{ inputs.DEVICE }}.aarch64/.ccache
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -s -v
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -M 2.0G
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -c
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -s -v
+          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/toolchain/bin/ccache -z
 
       - name: Tar ccache
         run: |
-          tar --remove-files -cf ccache-aarch64-${{ inputs.DEVICE }}-qt6.tar ./build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/.ccache 
+          tar --remove-files -cf ccache-aarch64-${{ inputs.DEVICE }}-qt6.tar ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/.ccache
 
       - name: Save ccache
         uses: softprops/action-gh-release@v3
@@ -115,8 +116,8 @@ jobs:
 
       - name: Compress directory
         run: |
-          tar --zstd --exclude='build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/build' -cf build.qt6.tar.zst \
-          build.ROCKNIX-${{ inputs.DEVICE }}.aarch64/          
+          tar --zstd --exclude='build.GaoOS-${{ inputs.DEVICE }}.aarch64/build' -cf build.qt6.tar.zst \
+          build.GaoOS-${{ inputs.DEVICE }}.aarch64/
 
       - uses: actions/upload-artifact@v7
         with:

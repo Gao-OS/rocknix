@@ -18,6 +18,7 @@ jobs:
     if: ${{ inputs.DEVICE != 'SM8650' && inputs.DEVICE != 'SM8750' }}
     runs-on: ubuntu-24.04
     env:
+      DISTRO: GaoOS
       PROJECT: ${{ inputs.PROJECT }}
       DEVICE: ${{ inputs.DEVICE }}
       ARCH: arm
@@ -64,20 +65,20 @@ jobs:
           name: output.logs (${{ inputs.DEVICE }}-arm)
           path: |
             output.log
-            ./build.ROCKNIX-${{ inputs.DEVICE }}.arm/.threads/logs/
+            ./build.GaoOS-${{ inputs.DEVICE }}.arm/.threads/logs/
 
       - name: Clean ccache
         run: |
-          export CCACHE_DIR=./build.ROCKNIX-${{ inputs.DEVICE }}.arm/.ccache
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.arm/toolchain/bin/ccache -s -v
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.arm/toolchain/bin/ccache -M 1.5G
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.arm/toolchain/bin/ccache -c
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.arm/toolchain/bin/ccache -s -v
-          ./build.ROCKNIX-${{ inputs.DEVICE }}.arm/toolchain/bin/ccache -z
+          export CCACHE_DIR=./build.GaoOS-${{ inputs.DEVICE }}.arm/.ccache
+          ./build.GaoOS-${{ inputs.DEVICE }}.arm/toolchain/bin/ccache -s -v
+          ./build.GaoOS-${{ inputs.DEVICE }}.arm/toolchain/bin/ccache -M 1.5G
+          ./build.GaoOS-${{ inputs.DEVICE }}.arm/toolchain/bin/ccache -c
+          ./build.GaoOS-${{ inputs.DEVICE }}.arm/toolchain/bin/ccache -s -v
+          ./build.GaoOS-${{ inputs.DEVICE }}.arm/toolchain/bin/ccache -z
 
       - name: Tar ccache
         run: |
-          tar -cf ccache-arm-${{ inputs.DEVICE }}.tar ./build.ROCKNIX-${{ inputs.DEVICE }}.arm/.ccache  
+          tar -cf ccache-arm-${{ inputs.DEVICE }}.tar ./build.GaoOS-${{ inputs.DEVICE }}.arm/.ccache
 
       - name: save ccache
         uses: softprops/action-gh-release@v3
@@ -93,11 +94,11 @@ jobs:
 
       - name: Compress directory
         run: |
-          find build.ROCKNIX-${{ inputs.DEVICE }}.arm \
-          -path build.ROCKNIX-${{ inputs.DEVICE }}.arm/build -prune -o \
+          find build.GaoOS-${{ inputs.DEVICE }}.arm \
+          -path build.GaoOS-${{ inputs.DEVICE }}.arm/build -prune -o \
           -print > filelist.txt
   
-          find build.ROCKNIX-${{ inputs.DEVICE }}.arm/build -maxdepth 1 -type d -name 'box86-*' | head -n 1 | while read boxdir; do
+          find build.GaoOS-${{ inputs.DEVICE }}.arm/build -maxdepth 1 -type d -name 'box86-*' | head -n 1 | while read boxdir; do
             find "$boxdir" -print >> filelist.txt
           done
   

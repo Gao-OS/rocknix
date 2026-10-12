@@ -3,6 +3,7 @@
 # Copyright (C) 2026 GaoOS contributors
 # Generate GaoOS release body with dynamic device tables from config.xml
 # Usage: generate-release-body.sh <DATE> <LAST_TAG>
+# Run from the directory containing the downloaded release artifacts.
 
 DATE="${1}"
 LAST_TAG="${2}"
@@ -63,7 +64,7 @@ format_dtb_name() {
   echo "${name}" | sed 's/-/ /g' | sed 's/\b\(.\)/\u\1/g'
 }
 
-# Generate image filename
+# Find downloaded image filenames for this device and variant.
 get_image_filename() {
   local device="$1"
   local subdevice="$2"
@@ -73,12 +74,20 @@ get_image_filename() {
     suffix="-${subdevice}"
   fi
 
-  echo "GaoOS-${device}.aarch64-${DATE}${suffix}.img.gz"
+  local filename
+  for filename in GaoOS-"${device}".aarch64-????????"${suffix}".img.gz; do
+    [ -f "${filename}" ] || continue
+    echo "${filename}"
+  done
 }
 
 get_update_filename() {
   local device="$1"
-  echo "GaoOS-${device}.aarch64-${DATE}.tar"
+  local filename
+  for filename in GaoOS-"${device}".aarch64-????????.squashfs; do
+    [ -f "${filename}" ] || continue
+    echo "${filename}"
+  done
 }
 
 # Build device description string
@@ -190,7 +199,6 @@ for device in ${devices}; do
     sub="${variant#*:}"
 
     description=$(get_device_description "${dev}" "${sub}")
-    img_file=$(get_image_filename "${dev}" "${sub}")
     doc_path=$(get_doc_path "${dev}" "${sub}")
 
     doc_link=""
@@ -198,7 +206,9 @@ for device in ${devices}; do
       doc_link="[documentation](${doc_path})"
     fi
 
-    echo "| **${description}** | [${img_file}](https://github.com/Gao-OS/rocknix/releases/download/${DATE}/${img_file}) | ${doc_link} |"
+    for img_file in $(get_image_filename "${dev}" "${sub}"); do
+      echo "| **${description}** | [${img_file}](https://github.com/Gao-OS/rocknix/releases/download/${DATE}/${img_file}) | ${doc_link} |"
+    done
   done
 done
 
@@ -208,8 +218,9 @@ cat << 'MIDDLE'
 * Download and install the update online via the System Settings menu.
 * If you are unable to update online
   * Download the latest version of GaoOS from GitHub
-  * Copy the update to your device over the network to your device's update share.
-  * Reboot the device, and the update will begin automatically.
+  * Copy the raw `.squashfs` update to your device's update share.
+  * Run `gaoos-update apply /storage/.update/<update-file>.squashfs`.
+  * Reboot after the update has been staged successfully.
 
 ### Update Package Downloads
 | **Device/Platform** | **Download Package** |
@@ -230,11 +241,12 @@ for device in ${devices}; do
       all_descriptions="${desc}"
     fi
   done
-  update_file=$(get_update_filename "${device}")
-  echo "| **${all_descriptions}** | [${update_file}](https://github.com/Gao-OS/rocknix/releases/download/${DATE}/${update_file}) |"
+  for update_file in $(get_update_filename "${device}"); do
+    echo "| **${all_descriptions}** | [${update_file}](https://github.com/Gao-OS/rocknix/releases/download/${DATE}/${update_file}) |"
+  done
 done
 
-cat << FOOTER
+cat << 'FOOTER'
 
 ## OTA Update
 
@@ -279,8 +291,8 @@ gaoos-update status
 * [Donating to ROCKNIX](https://rocknix.org/donations/)
 
 
-**Full Changelog**: https://github.com/Gao-OS/rocknix/compare/${LAST_TAG}...${DATE}
 FOOTER
+printf '**Full Changelog**: https://github.com/Gao-OS/rocknix/compare/%s...%s\n' "${LAST_TAG}" "${DATE}"
 
 if [ -n "${LAST_TAG}" ]; then
   printf "\n## Changelog\n"
