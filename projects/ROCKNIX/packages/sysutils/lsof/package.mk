@@ -16,5 +16,5 @@ pre_make_target() {
   # soelim is part of groff and not available in the build env.
   # lsof.man is only a man page - not needed for the binary.
   # Patch the Makefile to use cat instead.
-  sed -i 's|soelim|cat|g' ${PKG_BUILD}/.aarch64-rocknix-linux-gnu/Makefile
+  sed -i 's|soelim|cat|g' "${PKG_BUILD}/.${TARGET_NAME}/Makefile"
 }

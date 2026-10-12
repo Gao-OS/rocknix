@@ -1,0 +1,37 @@
+Subject: [PATCH] target: add GaoOS RK3566 target aliases
+
+Reuse the ROCKNIX target definitions for GaoOS compiler triplets without
+changing their ABI, CPU features, or target options.
+
+diff --git a/compiler/rustc_target/src/spec/mod.rs b/compiler/rustc_target/src/spec/mod.rs
+--- a/compiler/rustc_target/src/spec/mod.rs
++++ b/compiler/rustc_target/src/spec/mod.rs
+@@ -1455,6 +1455,8 @@ fn $module() {
+ }
+ 
+ supported_targets! {
++    ("aarch64-gaoos-linux-gnu", aarch64_gaoos_linux_gnu),
++    ("armv8a-gaoos-linux-gnueabi", armv8a_gaoos_linux_gnueabi),
+     ("x86_64-rocknix-linux-gnu", x86_64_rocknix_linux_gnu),
+     ("aarch64-rocknix-linux-gnu", aarch64_rocknix_linux_gnu),
+     ("armv8a-rocknix-linux-gnueabi", armv8a_rocknix_linux_gnueabi),
+diff --git a/compiler/rustc_target/src/spec/targets/aarch64_gaoos_linux_gnu.rs b/compiler/rustc_target/src/spec/targets/aarch64_gaoos_linux_gnu.rs
+new file mode 100644
+--- /dev/null
++++ b/compiler/rustc_target/src/spec/targets/aarch64_gaoos_linux_gnu.rs
+@@ -0,0 +1,5 @@
++use crate::spec::Target;
++
++pub(crate) fn target() -> Target {
++    super::aarch64_rocknix_linux_gnu::target()
++}
+diff --git a/compiler/rustc_target/src/spec/targets/armv8a_gaoos_linux_gnueabi.rs b/compiler/rustc_target/src/spec/targets/armv8a_gaoos_linux_gnueabi.rs
+new file mode 100644
+--- /dev/null
++++ b/compiler/rustc_target/src/spec/targets/armv8a_gaoos_linux_gnueabi.rs
+@@ -0,0 +1,5 @@
++use crate::spec::Target;
++
++pub(crate) fn target() -> Target {
++    super::armv8a_rocknix_linux_gnueabi::target()
++}
