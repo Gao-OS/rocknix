@@ -74,8 +74,12 @@ fi
 
 # Prune old releases
 echo "Prune old releases: ${DISTRO}-${DEVICE}.${ARCH}-*"
-rm -f ./release/${DISTRO}-${DEVICE}.${ARCH}-*
-rm -f ./target/${DISTRO}-${DEVICE}.${ARCH}-*
+for artifact in ./release/"${DISTRO}-${DEVICE}.${ARCH}-"* \
+                ./target/"${DISTRO}-${DEVICE}.${ARCH}-"*; do
+  if [ -f "${artifact}" ] || [ -L "${artifact}" ]; then
+    rm -f -- "${artifact}"
+  fi
+done
 
 # Remove image root
 rm -rf ./build.${DISTRO}-${DEVICE}.${ARCH}/image
