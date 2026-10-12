@@ -8,8 +8,7 @@
 
 case "${1}" in
   canupdate)
-    result=$(gaoos-update check 2>/dev/null)
-    if [ -n "${result}" ] && [ "${result}" != "no" ]; then
+    if result=$(gaoos-update check 2>/dev/null) && [ -n "${result}" ] && [ "${result}" != "no" ]; then
       echo "${result}"
       exit 0
     else

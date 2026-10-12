@@ -32,9 +32,13 @@ read_ab_state() {
 write_ab_state() {
   local was_ro=0
   if grep -q '/flash.*ro[,[:space:]]' /proc/mounts 2>/dev/null; then
-    mount -o remount,rw /flash 2>/dev/null && was_ro=1
+    mount -o remount,rw /flash 2>/dev/null || return 1
+    was_ro=1
   fi
-  cat > "${AB_STATE}" <<EOF
+  local state_tmp result=0
+  state_tmp=$(mktemp "${AB_STATE}.XXXXXX") || result=1
+  if [ "${result}" = "0" ]; then
+    if ! cat > "${state_tmp}" <<EOF
 active_slot=${active_slot}
 status_a=${status_a}
 status_b=${status_b}
@@ -42,8 +46,19 @@ retry_a=${retry_a}
 retry_b=${retry_b}
 max_retries=${max_retries}
 EOF
-  sync
+    then
+      result=1
+    fi
+    # Replace only after the complete new state has been flushed.
+    if [ "${result}" != "0" ] || ! sync || ! mv -f "${state_tmp}" "${AB_STATE}"; then
+      result=1
+    elif ! sync; then
+      result=1
+    fi
+    rm -f "${state_tmp}"
+  fi
   [ "${was_ro}" = "1" ] && mount -o remount,ro /flash 2>/dev/null || true
+  return "${result}"
 }
 
 # Wait for system to stabilize (FR4.2)
