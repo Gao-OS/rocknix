@@ -10,7 +10,7 @@
 ################################################################################
 
 # set variables
-IMG_TMP=$(mktemp -d -p ${TARGET_IMG})
+IMG_TMP=$(mktemp -d -p "${TARGET_IMG}") || exit 1
 SAVE_ERROR="${IMG_TMP}/save_error"
 
 if [ -z "${SYSTEM_SIZE}" -o -z "${SYSTEM_PART_START}" ]; then
@@ -24,6 +24,18 @@ DISK_GPT_PADDING=1
 if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
   BOOT_SIZE="${BOOT_SIZE:-256}"
   SLOT_SIZE="${SLOT_SIZE:-1536}"
+  for size in SYSTEM_PART_START BOOT_SIZE SLOT_SIZE STORAGE_SIZE; do
+    if [[ ! "${!size}" =~ ^[1-9][0-9]*$ ]]; then
+      echo "mkimage: ${size} must be a positive integer!" >&2
+      rm -rf "${IMG_TMP}"
+      exit 1
+    fi
+  done
+  if [ "${DEVICE}" = "RK3566" ] && [ "${PARTITION_TABLE}" != "gpt" ]; then
+    echo "mkimage: GaoOS RK3566 requires a GPT partition table!" >&2
+    rm -rf "${IMG_TMP}"
+    exit 1
+  fi
   DISK_SIZE=$((${DISK_START_PADDING} + ${BOOT_SIZE} + ${SLOT_SIZE} * 2 + ${STORAGE_SIZE} + ${DISK_GPT_PADDING}))
 else
   DISK_SIZE=$((${DISK_START_PADDING} + ${SYSTEM_SIZE} + ${STORAGE_SIZE} + ${DISK_GPT_PADDING}))
@@ -41,6 +53,8 @@ cleanup() {
 }
 
 show_error() {
+  trap - ERR
+  set +e
   echo "image: An error has occurred..."
   echo
   if [ -s "${SAVE_ERROR}" ]; then
@@ -57,11 +71,43 @@ trap cleanup SIGINT
 
 # Check capacity before creating or formatting any image partitions.
 if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
+  # Unlike the legacy assembly path, every unhandled failure must stop an A/B
+  # image, including failures inside the sourced bootloader helpers.
+  set -Ee -o pipefail
+  trap 'echo "image: failed at line ${LINENO}: ${BASH_COMMAND}" >&2; show_error' ERR
+
+  if [ "${DEVICE}" = "RK3566" ]; then
+    for boot_file in "${SUBDEVICE}_uboot.bin" boot.scr; do
+      if [ ! -s "${RELEASE_DIR}/3rdparty/bootloader/${boot_file}" ]; then
+        echo "ERROR: required boot file ${boot_file} is missing or empty!" >&2
+        show_error
+      fi
+    done
+    if [ "${SUBDEVICE}" = "Generic" ] && [ ! -s "${RELEASE_DIR}/3rdparty/bootloader/device_trees/rk3566-powkiddy-rgb30.dtb" ]; then
+      echo "ERROR: RGB30 DTB missing from RK3566 Generic boot files!" >&2
+      show_error
+    fi
+  fi
+
   # Validate image fits in slot
   SQUASHFS_SIZE=$(stat -c %s "${TARGET_IMG}/${BUILD_NAME}.system" 2>"${SAVE_ERROR}") || show_error
   SLOT_BYTES=$((SLOT_SIZE * 1024 * 1024))
   if [ "${SQUASHFS_SIZE}" -gt "${SLOT_BYTES}" ]; then
     echo "ERROR: SquashFS image (${SQUASHFS_SIZE} bytes) exceeds slot size (${SLOT_BYTES} bytes)!"
+    show_error
+  fi
+  if [ "${SQUASHFS_SIZE}" -eq 0 ]; then
+    echo "ERROR: SquashFS image is empty!" >&2
+    show_error
+  fi
+  unsquashfs -s "${TARGET_IMG}/${BUILD_NAME}.system" >"${SAVE_ERROR}" 2>&1 || show_error
+  if [ "${DEVICE}" = "RK3566" ]; then
+    python3 "${SCRIPTS}/gaoos-validate-boot.py" \
+      --kernel "${TARGET_IMG}/${BUILD_NAME}.kernel" \
+      --boot-script "${RELEASE_DIR}/3rdparty/bootloader/boot.scr" || show_error
+  fi
+  if [ ! -s "${RELEASE_DIR}/target/KERNEL.md5" ]; then
+    echo "ERROR: KERNEL.md5 is missing or empty!" >&2
     show_error
   fi
 fi
@@ -192,7 +238,11 @@ alias mmd='mmd -i "${IMG_TMP}/part1.fat"'
 echo "image: creating filesystem on part1..."
 
 if [ "${BOOTLOADER}" = "syslinux" -o "${BOOTLOADER}" = "bcm2835-bootloader" -o "${BOOTLOADER}" = "u-boot" -o "${BOOTLOADER}" = "arm-efi" -o "${BOOTLOADER}" = "qcom-abl" ]; then
-  mformat -i "${IMG_TMP}/part1.fat" -v "${DISTRO_BOOTLABEL}" -N "${UUID_SYSTEM//-/}" :: >"${SAVE_ERROR}" 2>&1 || show_error
+  if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
+    mformat -F -i "${IMG_TMP}/part1.fat" -v "${DISTRO_BOOTLABEL}" -N "${UUID_SYSTEM//-/}" :: >"${SAVE_ERROR}" 2>&1 || show_error
+  else
+    mformat -i "${IMG_TMP}/part1.fat" -v "${DISTRO_BOOTLABEL}" -N "${UUID_SYSTEM//-/}" :: >"${SAVE_ERROR}" 2>&1 || show_error
+  fi
 fi
 sync
 
@@ -285,6 +335,7 @@ elif [ "${BOOTLOADER}" = "u-boot" ]; then
     . "${PROJECT_DIR}/${PROJECT}/bootloader/mkimage"
   else
     echo "image: skipping u-boot. no mkimage script found"
+    [ "${GAOOS_AB_BOOT}" != "yes" ] || show_error
   fi
 
   echo "image: copying files to part1..."

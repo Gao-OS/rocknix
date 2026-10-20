@@ -1,20 +1,46 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright (C) 2024-present ROCKNIX (https://github.com/ROCKNIX)
 
+if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
+  xmlstarlet val -e "${PROJECT_DIR}/${PROJECT}/config.xml" >"${SAVE_ERROR}" 2>&1 || show_error
+  # A valid device can have no subdevices. Its XMLStarlet query returns 1,
+  # while config/functions uses the final tr status for this optional result.
+  set +o pipefail
+fi
 . config/functions
+if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
+  set -o pipefail
+fi
 
 mkimage_uboot() {
+  local uboot_conv="sync,noerror,notrunc"
+  if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
+    uboot_conv="fsync,notrunc"
+  fi
+  if [ "${GAOOS_AB_BOOT}" = "yes" ] && [ "${DEVICE}" = "RK3566" ]; then
+    # Never silently fall back to a binary for another RK3566 board variant.
+    if [ ! -s "${RELEASE_DIR}/3rdparty/bootloader/${SUBDEVICE}_uboot.bin" ]; then
+      echo "ERROR: missing or empty ${SUBDEVICE}_uboot.bin" >&2
+      show_error
+    fi
+    local uboot_size
+    uboot_size=$(stat -c %s "${RELEASE_DIR}/3rdparty/bootloader/${SUBDEVICE}_uboot.bin") || show_error
+    if [ "${uboot_size}" -gt "$((SYSTEM_PART_START * 512 - 32768))" ]; then
+      echo "ERROR: U-Boot binary overlaps the boot partition" >&2
+      show_error
+    fi
+  fi
   if [ -f "${RELEASE_DIR}/3rdparty/bootloader/${SUBDEVICE}_uboot.bin" ]; then
     # RK3566-Generic and RK3566-Powkiddy_x55
     echo "image: writing ${SUBDEVICE}_uboot.bin to $(basename "${DISK}")..."
-    dd if="${RELEASE_DIR}/3rdparty/bootloader/${SUBDEVICE}_uboot.bin" of="${DISK}" bs=512 seek=64 conv=sync,noerror,notrunc >"${SAVE_ERROR}" 2>&1 || show_error
+    dd if="${RELEASE_DIR}/3rdparty/bootloader/${SUBDEVICE}_uboot.bin" of="${DISK}" bs=512 seek=64 conv="${uboot_conv}" >"${SAVE_ERROR}" 2>&1 || show_error
   elif [ -f "${RELEASE_DIR}/3rdparty/bootloader/uboot.bin" ]; then
     echo "image: writing uboot.bin to $(basename "${DISK}")..."
-    dd if="${RELEASE_DIR}/3rdparty/bootloader/uboot.bin" of="${DISK}" bs=512 seek=64 conv=sync,noerror,notrunc >"${SAVE_ERROR}" 2>&1 || show_error
+    dd if="${RELEASE_DIR}/3rdparty/bootloader/uboot.bin" of="${DISK}" bs=512 seek=64 conv="${uboot_conv}" >"${SAVE_ERROR}" 2>&1 || show_error
   elif [ -f "${RELEASE_DIR}/3rdparty/bootloader/u-boot.bin" ]; then
     # S922X
     echo "image: writing u-boot.bin to $(basename "${DISK}")..."
-    dd if="${RELEASE_DIR}/3rdparty/bootloader/u-boot.bin" of="${DISK}" bs=512 seek=1 conv=sync,noerror,notrunc >"${SAVE_ERROR}" 2>&1 || show_error
+    dd if="${RELEASE_DIR}/3rdparty/bootloader/u-boot.bin" of="${DISK}" bs=512 seek=1 conv="${uboot_conv}" >"${SAVE_ERROR}" 2>&1 || show_error
   elif [ -f "${RELEASE_DIR}/3rdparty/bootloader/H700_${SUBDEVICE}_u-boot-sunxi-with-spl.bin" ]; then
     # H700
     echo "image: writing u-boot-sunxi-with-spl.bin to $(basename "${DISK}")..."
@@ -26,6 +52,7 @@ mkimage_uboot() {
     mcopy -s -o "${RELEASE_DIR}/3rdparty/bootloader/device_trees" ::
   else
     echo "ERROR no u-boot file found for ${SUBDEVICE}"
+    [ "${GAOOS_AB_BOOT}" != "yes" ] || show_error
   fi
 }
 
@@ -34,16 +61,24 @@ mkimage_extlinux() {
     # Standard boot tries extlinux before scripts. A/B images must enter boot.scr.
     local gaoos_fdt=""
     local gaoos_fdtdir="device_trees"
-    if [ "$(get_fdt_type)" = "FDT" ]; then
-      gaoos_fdt="$(get_fdt)"
-    else
-      gaoos_fdtdir="$(get_fdt)"
+    local gaoos_fdt_type gaoos_fdt_path gaoos_overlays
+    gaoos_fdt_type=$(get_fdt_type) || show_error
+    gaoos_fdt_path=$(get_fdt) || show_error
+    gaoos_overlays=$(get_fdt_overlays) || show_error
+    if [ -z "${gaoos_fdt_path}" ]; then
+      echo "ERROR: missing A/B device-tree configuration" >&2
+      show_error
     fi
+    case "${gaoos_fdt_type}" in
+      FDT) gaoos_fdt="${gaoos_fdt_path}" ;;
+      FDTDIR) gaoos_fdtdir="${gaoos_fdt_path}" ;;
+      *) echo "ERROR: invalid A/B device-tree configuration" >&2; show_error ;;
+    esac
     cat <<EOF > "${IMG_TMP}/gaoos_boot.env"
 extra_cmdline=${EXTRA_CMDLINE}
 gaoos_fdt=${gaoos_fdt}
 gaoos_fdtdir=${gaoos_fdtdir}
-gaoos_overlays=$(get_fdt_overlays)
+gaoos_overlays=${gaoos_overlays}
 EOF
     mcopy "${IMG_TMP}/gaoos_boot.env" ::/gaoos_boot.env >"${SAVE_ERROR}" 2>&1 || show_error
     return
@@ -89,6 +124,12 @@ mkimage_bootscr() {
 }
 
 mkimage_dtb() {
+  if [ "${GAOOS_AB_BOOT}" = "yes" ] && [ "${DEVICE}" = "RK3566" ] && [ "${SUBDEVICE}" = "Generic" ]; then
+    if [ ! -s "${RELEASE_DIR}/3rdparty/bootloader/device_trees/rk3566-powkiddy-rgb30.dtb" ]; then
+      echo "ERROR: RGB30 DTB missing from RK3566 Generic boot files" >&2
+      show_error
+    fi
+  fi
   echo "image: copying device trees..."
   case "$DEVICE" in
     RK3326)
@@ -103,7 +144,7 @@ mkimage_dtb() {
       mcopy "${RELEASE_DIR}/3rdparty/bootloader/"*.dtb ::
       ;;
     *)
-      mcopy -s "${RELEASE_DIR}/3rdparty/bootloader/device_trees" ::
+      mcopy -s "${RELEASE_DIR}/3rdparty/bootloader/device_trees" :: >"${SAVE_ERROR}" 2>&1 || show_error
       ;;
   esac
 

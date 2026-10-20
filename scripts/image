@@ -45,6 +45,7 @@ function do_mkimage() {
     EXTRA_CMDLINE="${EXTRA_CMDLINE}" \
     SYSTEM_SIZE="${SYSTEM_SIZE}" \
     SYSTEM_PART_START="${SYSTEM_PART_START}" \
+    PARTITION_TABLE="${PARTITION_TABLE}" \
     STORAGE_SIZE="${STORAGE_SIZE:-32}" \
     OVA_SIZE="${OVA_SIZE}" \
     SUBDEVICE="${SUBDEVICE}" \
@@ -236,6 +237,15 @@ rm -rf ${TARGET_IMG}/${IMAGE_NAME}.kernel
 # Copy kernel to target dir
 cp -PR $(get_install_dir linux)/.image/${KERNEL_TARGET} ${TARGET_IMG}/${IMAGE_NAME}.kernel
 chmod 0644 ${TARGET_IMG}/${IMAGE_NAME}.kernel
+
+if [ "${GAOOS_AB_BOOT}" = "yes" ] && [ "${DEVICE}" = "RK3566" ]; then
+  # The initramfs is embedded in KERNEL. Reject a stale or incomplete kernel
+  # before packaging it into an otherwise valid SquashFS/image release.
+  python3 "${SCRIPTS}/gaoos-validate-boot.py" \
+    --kernel "${TARGET_IMG}/${IMAGE_NAME}.kernel" \
+    --init "${BUILD}/initramfs/init" \
+    --busybox "${BUILD}/initramfs/usr/bin/busybox"
+fi
 
 # Set mksquashfs options for each compression method
 if [ -z "${SQUASHFS_COMPRESSION_OPTION}" ]; then

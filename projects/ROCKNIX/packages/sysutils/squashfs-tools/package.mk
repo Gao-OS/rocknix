@@ -21,7 +21,7 @@ make_target() {
 
 make_host() {
   make -C squashfs-tools \
-          mksquashfs \
+          mksquashfs unsquashfs \
           XZ_SUPPORT=0 \
           LZO_SUPPORT=1 \
           LZ4_SUPPORT=0 \
@@ -33,7 +33,7 @@ make_host() {
 
 makeinstall_host() {
   mkdir -p ${TOOLCHAIN}/bin
-  cp squashfs-tools/mksquashfs ${TOOLCHAIN}/bin
+  cp squashfs-tools/mksquashfs squashfs-tools/unsquashfs ${TOOLCHAIN}/bin
 }
 
 makeinstall_target() {
