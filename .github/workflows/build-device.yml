@@ -24,6 +24,9 @@ on:
         type: string
         required: true
 
+permissions:
+  contents: read
+
 jobs:
   build-arm:
     uses: ./.github/workflows/build-arm.yml
@@ -34,6 +37,9 @@ jobs:
       OWNER_LC: ${{ inputs.OWNER_LC }}
 
   build-aarch64-toolchain:
+    permissions:
+      contents: read
+      actions: write
     uses: ./.github/workflows/build-aarch64-toolchain.yml
     secrets: inherit
     with:
@@ -78,6 +84,9 @@ jobs:
       OWNER_LC: ${{ inputs.OWNER_LC }}
 
   build-aarch64-emu-libretro:
+    permissions:
+      contents: read
+      actions: write
     needs:
       - build-aarch64
       - build-aarch64-mame-lr
@@ -120,6 +129,9 @@ jobs:
 
   purge-artifact:
     name: Artifacts cleanup
+    permissions:
+      contents: read
+      actions: write
     needs: build-aarch64-image
     if: ${{ always() && !cancelled() && !contains(needs.*.result, 'failure')  }}
     runs-on: ubuntu-24.04

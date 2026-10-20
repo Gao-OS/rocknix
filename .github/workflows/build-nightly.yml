@@ -75,6 +75,9 @@ on:
   pull_request:
     types: [ assigned ]
 
+permissions:
+  contents: read
+
 jobs:
   set-envs:
     if: (github.event_name != 'schedule') || (github.repository == 'Gao-OS/rocknix' && github.ref_name == 'gaoos')
@@ -162,6 +165,9 @@ jobs:
   build-docker:
     if: github.event_name != 'schedule' || (github.repository == 'Gao-OS/rocknix' && github.ref_name == 'gaoos')
     name: Docker
+    permissions:
+      contents: read
+      packages: write
     needs: set-envs
     uses: ./.github/workflows/build-docker-image.yml
     with:
@@ -170,6 +176,9 @@ jobs:
   build-devices:
     if: (github.event_name != 'schedule') || (github.repository == 'Gao-OS/rocknix' && github.ref_name == 'gaoos')
     name: Build Devices
+    permissions:
+      contents: read
+      actions: write
     needs:
       - set-envs
       - build-docker
@@ -187,7 +196,9 @@ jobs:
       OFFICIAL: ${{ needs.set-envs.outputs.OFFICIAL }}
 
   rerun-failed-jobs:
-    if: always() && !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) && fromJSON(github.run_attempt) < 3 && github.ref_name == 'gaoos' && (github.event_name != 'schedule' || github.repository == 'Gao-OS/rocknix')
+    if: always() && !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) && fromJSON(github.run_attempt) < 3 && github.ref_name == 'gaoos' && github.event_name != 'pull_request' && (github.event_name != 'schedule' || github.repository == 'Gao-OS/rocknix')
+    permissions:
+      actions: write
     needs: build-devices
     runs-on: ubuntu-24.04
     steps:
@@ -199,6 +210,8 @@ jobs:
   release-nightly:
      if: ${{ always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.repository_owner == 'Gao-OS' && needs.set-envs.outputs.NIGHTLY == 'yes' && github.event_name != 'pull_request' }}
      name: Release nightly
+     permissions:
+       contents: write
      needs: [set-envs, build-devices]
      runs-on: ubuntu-24.04
      steps:
@@ -257,12 +270,17 @@ jobs:
          allowUpdates: true
          makeLatest: true
          prerelease: true
-         body: ${{ steps.create-nightly-tag.outputs.commit_msg }}
+         body: |
+           HARDWARE_BOOT_UNVERIFIED: RGB30 cold boot and rollback have not been verified on physical hardware. This prerelease is for testing.
+
+           ${{ steps.create-nightly-tag.outputs.commit_msg }}
          token: ${{ secrets.GITHUB_TOKEN }}
 
   release-official:
-    if: ${{ always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.repository_owner == 'Gao-OS' && needs.set-envs.outputs.OFFICIAL == 'yes' }}
+    if: ${{ always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.repository_owner == 'Gao-OS' && needs.set-envs.outputs.OFFICIAL == 'yes' && github.event_name != 'pull_request' }}
     name: Release official
+    permissions:
+      contents: write
     needs: [set-envs, build-devices]
     runs-on: ubuntu-24.04
     steps:

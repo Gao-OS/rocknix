@@ -27,6 +27,59 @@ def run_script(script, args, cwd, env=None):
 
 
 class ReleasePipeline(unittest.TestCase):
+    def assert_permission(self, block, resource, access):
+        self.assertRegex(block, r'(?m)^\s+permissions:\n(?:\s+[\w-]+: \w+\n)*?\s+'
+                         + resource + ': ' + access + r'\s*$')
+
+    def test_nested_build_callers_allow_required_actions_permission(self):
+        nightly = (WORKFLOWS / 'build-nightly.yml').read_text()
+        device = (WORKFLOWS / 'build-device.yml').read_text()
+        self.assert_permission(job(nightly, 'build-devices'), 'actions', 'write')
+        self.assert_permission(job(nightly, 'build-devices'), 'contents', 'read')
+        for name in ['build-aarch64-toolchain', 'build-aarch64-emu-libretro', 'purge-artifact']:
+            self.assert_permission(job(device, name), 'actions', 'write')
+            self.assert_permission(job(device, name), 'contents', 'read')
+
+    def test_write_permissions_are_scoped_to_publication_and_retry_jobs(self):
+        source = (WORKFLOWS / 'build-nightly.yml').read_text()
+        defaults = source[:source.index('\njobs:')]
+        self.assertIn('\npermissions:\n  contents: read\n', defaults)
+        self.assertNotIn(': write', defaults)
+        self.assert_permission(job(source, 'build-docker'), 'packages', 'write')
+        for name in ['release-nightly', 'release-official']:
+            block = job(source, name)
+            self.assert_permission(block, 'contents', 'write')
+            self.assertIn("github.event_name != 'pull_request'", block)
+        retry = job(source, 'rerun-failed-jobs')
+        self.assert_permission(retry, 'actions', 'write')
+        self.assertIn("github.event_name != 'pull_request'", retry)
+        retry_workflow = (WORKFLOWS / 'retry-workflow.yml').read_text()
+        self.assert_permission(job(retry_workflow, 'rerun'), 'actions', 'write')
+        self.assertNotIn('pull_request_target:', source)
+        self.assertNotIn('write-all', source)
+
+    def test_docker_authentication_is_skipped_for_pull_requests(self):
+        source = (WORKFLOWS / 'build-docker-image.yml').read_text()
+        block = job(source, 'build-docker-image')
+        self.assert_permission(block, 'contents', 'read')
+        self.assert_permission(block, 'packages', 'write')
+        login = block[block.index('- name: Login to GHCR'):block.index('- name: Build and push')]
+        self.assertIn("if: github.event_name != 'pull_request'", login)
+        self.assertIn("push: ${{ github.event_name != 'pull_request' }}", block)
+
+    def test_stable_release_remains_draft_without_hardware_acceptance(self):
+        source = (WORKFLOWS / 'build-nightly.yml').read_text()
+        block = job(source, 'release-official')
+        self.assertRegex(block, r'(?m)^\s+draft: true$')
+
+    def test_nightly_prerelease_explicitly_marks_hardware_unverified(self):
+        source = (WORKFLOWS / 'build-nightly.yml').read_text()
+        block = job(source, 'release-nightly')
+        release = block[block.index('uses: ncipollo/release-action@v1'):]
+        self.assertRegex(release, r'(?m)^\s+prerelease: true$')
+        body = release[release.index('body:'):release.index('token:')]
+        self.assertIn('HARDWARE_BOOT_UNVERIFIED', body)
+
     def test_release_jobs_directly_depend_on_release_flags(self):
         source = (WORKFLOWS / 'build-nightly.yml').read_text()
         for name in ['release-nightly', 'release-official']:
