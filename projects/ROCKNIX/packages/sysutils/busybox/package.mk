@@ -234,6 +234,7 @@ makeinstall_init() {
   sed -e "s/@DISTRONAME@/${DISTRONAME}/g" \
       -e "s/@DEVICENAME@/${DEVICE}/g" \
       -e "s/@KERNEL_NAME@/${KERNEL_NAME}/g" \
+      -e "s/@GAOOS_AB_BOOT@/${GAOOS_AB_BOOT:-no}/g" \
       -i ${INSTALL}/init
   chmod 755 ${INSTALL}/init
 }

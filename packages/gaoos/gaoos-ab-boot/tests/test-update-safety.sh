@@ -34,6 +34,9 @@ class UpdateSafety(unittest.TestCase):
         self.state.write_bytes(self.original_state)
         (self.root / "cmdline").write_text("gaoos.slot=a gaoos.dev=mmcblk0\n")
         (self.root / "mounts").write_text("/dev/mmcblk0p1 " + str(self.flash) + " vfat rw,relatime 0 0\n")
+        with (self.root / "mounts").open("a") as stream:
+            stream.write("/dev/mmcblk0p2 / squashfs ro,relatime 0 0\n")
+            stream.write("/dev/mmcblk0p4 " + str(self.storage) + " ext4 rw,relatime 0 0\n")
         (self.root / "uptime").write_text("100.0 20.0\n")
         (self.root / "device").write_text("RK3566\n")
         (self.root / "version").write_text("1\n")
@@ -63,6 +66,9 @@ class UpdateSafety(unittest.TestCase):
             "/etc/gaoos-device": str(self.root / "device"),
             "/etc/gaoos-version": str(self.root / "version"),
             "/usr/share/gaoos/gaoos-ab.conf.default": str(self.root / "conf"),
+            "/usr/bin/gaoos-boot-confirm": str(self.bin / "gaoos-boot-confirm"),
+            "/usr/share/sway/config.desktop": str(self.root / "config.desktop"),
+            "/run/rocknix/start.games": str(self.root / "start.games"),
             "/var/log/gaoos-boot-confirm.log": str(self.root / "confirm.log"),
             "/tmp/gaoos-update-progress": str(self.root / "progress"),
             "/storage": str(self.storage),
@@ -88,7 +94,15 @@ else:
         self.executable("mount", "#!/bin/bash\nexit 0\n")
         self.executable("mountpoint", "#!/bin/bash\nexit 0\n")
         self.executable("sleep", "#!/bin/bash\nexit 0\n")
-        self.executable("systemctl", "#!/bin/bash\nexit 1\n")
+        self.executable("systemctl", '''#!/bin/bash
+case "$*" in
+  "is-active --quiet multi-user.target"|"is-active --quiet graphical.target"|"is-active --quiet rocknix-autostart.service") [ "${SYSTEM_HEALTH:-good}" = good ] ;;
+  "is-active --quiet sway.service") [ "${SWAY_HEALTH:-${UI_HEALTH:-good}}" = good ] ;;
+  "is-active --quiet essway.service") [ "${ESSWAY_HEALTH:-${UI_HEALTH:-good}}" = good ] ;;
+  "is-enabled essway.service") printf '%s\\n' "${ESSWAY_STATE:-disabled}"; [ "${ESSWAY_STATE:-disabled}" = enabled ] ;;
+  *) exit 1 ;;
+esac
+''')
         self.executable("sync", "#!/bin/bash\n[ \"${SYNC_FAIL:-0}\" = 0 ]\n")
         self.executable("cat", '''#!/bin/bash
 if [ "$#" = 0 ] && [ "${CAT_FAIL:-0}" = 1 ]; then
@@ -291,6 +305,105 @@ target.write_bytes(pathlib.Path(os.environ['TEST_ROOT'], 'reconstructed').read_b
         self.state.write_bytes(self.original_state.replace(b"status_a=good", b"status_a=pending").replace(b"retry_a=0", b"retry_a=2"))
         self.assert_success(self.run_command("gaoos-boot-confirm"))
         self.assertEqual(self.state.read_bytes(), self.original_state)
+
+    def test_factory_uboot_export_omits_empty_status_b(self):
+        self.state.write_bytes(self.original_state.replace(b"status_a=good", b"status_a=pending").replace(b"status_b=good\n", b""))
+        self.assert_success(self.run_command("gaoos-boot-confirm"))
+        self.assertIn("status_a=good", self.state.read_text())
+        self.assertIn("status_b=\n", self.state.read_text())
+
+    def test_missing_or_malicious_state_cannot_confirm(self):
+        for data in (b"active_slot=a\n", self.original_state + b"echo=MALICIOUS\n", self.original_state.replace(b"retry_a=0", b"retry_a=invalid")):
+            self.state.write_bytes(data)
+            result = self.run_command("gaoos-boot-confirm")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(self.state.read_bytes(), data)
+
+    def test_boot_confirm_rejects_wrong_or_corrupt_root(self):
+        pending = self.original_state.replace(b"status_a=good", b"status_a=pending")
+        original_mounts = (self.root / "mounts").read_text()
+        for change in ("/dev/mmcblk0p3 / squashfs", "/dev/mmcblk1p2 / squashfs", "/dev/mmcblk0p2 / ext4"):
+            with self.subTest(root=change):
+                self.state.write_bytes(pending)
+                (self.root / "mounts").write_text(original_mounts.replace("/dev/mmcblk0p2 / squashfs", change))
+                self.assertNotEqual(self.run_command("gaoos-boot-confirm").returncode, 0)
+                self.assertEqual(self.state.read_bytes(), pending)
+
+    def test_boot_confirm_rejects_readonly_storage_or_unhealthy_userspace(self):
+        pending = self.original_state.replace(b"status_a=good", b"status_a=pending")
+        self.state.write_bytes(pending)
+        self.assertNotEqual(self.run_command("gaoos-boot-confirm", SYSTEM_HEALTH="failed").returncode, 0)
+        self.assertEqual(self.state.read_bytes(), pending)
+
+    def test_manual_confirm_uses_the_same_health_checks(self):
+        pending = self.original_state.replace(b"status_a=good", b"status_a=pending")
+        self.state.write_bytes(pending)
+        self.assertNotEqual(self.run_command("gaoos-update", "confirm", SYSTEM_HEALTH="failed").returncode, 0)
+        self.assertEqual(self.state.read_bytes(), pending)
+
+    def test_configured_sway_frontend_is_healthy_and_failure_stays_pending(self):
+        profile = self.storage / ".config/profile.d/090-ui_service"
+        profile.parent.mkdir(parents=True, exist_ok=True)
+        profile.write_text('UI_SERVICE="sway.service essway.service"\n')
+        (self.root / "start.games").touch()
+        pending = self.original_state.replace(b"status_a=good", b"status_a=pending")
+        self.state.write_bytes(pending)
+        self.assert_success(self.run_command("gaoos-boot-confirm"))
+        self.state.write_bytes(pending)
+        self.assertNotEqual(self.run_command("gaoos-boot-confirm", UI_HEALTH="failed").returncode, 0)
+        self.assertEqual(self.state.read_bytes(), pending)
+        mounts = self.root / "mounts"
+        mounts.write_text(mounts.read_text().replace("ext4 rw,relatime", "ext4 ro,relatime"))
+        self.assertNotEqual(self.run_command("gaoos-boot-confirm").returncode, 0)
+        self.assertEqual(self.state.read_bytes(), pending)
+
+    def test_boot_confirm_rejects_missing_or_invalid_slot_argument(self):
+        pending = self.original_state.replace(b"status_a=good", b"status_a=pending")
+        for commandline in ("quiet", "gaoos.slot=bad", "gaoos.slot=a gaoos.slot=b"):
+            self.state.write_bytes(pending)
+            (self.root / "cmdline").write_text(commandline + "\n")
+            self.assertNotEqual(self.run_command("gaoos-boot-confirm").returncode, 0)
+            self.assertEqual(self.state.read_bytes(), pending)
+
+    def prepare_frontend_health(self, desktop):
+        profile = self.storage / ".config/profile.d/090-ui_service"
+        profile.parent.mkdir(parents=True, exist_ok=True)
+        profile.write_text('UI_SERVICE="sway.service essway.service"\n')
+        (self.root / "start.games").touch()
+        template = "desktop template\n"
+        (self.root / "config.desktop").write_text(template)
+        config = self.storage / ".config/sway/config"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        # Sway startup copies the selected template, then appends output setup.
+        config.write_text((template if desktop else "kiosk template\n") + "output DSI-1 transform 0\n")
+        pending = self.original_state.replace(b"status_a=good", b"status_a=pending")
+        self.state.write_bytes(pending)
+        return pending
+
+    def test_intended_sway_desktop_can_confirm_with_masked_game_frontend(self):
+        self.prepare_frontend_health(desktop=True)
+        result = self.run_command("gaoos-boot-confirm", ESSWAY_STATE="masked", ESSWAY_HEALTH="inactive")
+        self.assert_success(result)
+        self.assertIn("status_a=good\n", self.state.read_text())
+
+    def test_kiosk_cannot_confirm_a_failed_or_unexpectedly_masked_game_frontend(self):
+        pending = self.prepare_frontend_health(desktop=False)
+        for state in ("disabled", "masked"):
+            with self.subTest(essway_state=state):
+                self.state.write_bytes(pending)
+                result = self.run_command("gaoos-boot-confirm", ESSWAY_STATE=state, ESSWAY_HEALTH="failed")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.state.read_bytes(), pending)
+
+    def test_desktop_exemption_requires_active_compositor_and_explicit_mask(self):
+        pending = self.prepare_frontend_health(desktop=True)
+        for state, sway in (("masked", "failed"), ("disabled", "good")):
+            with self.subTest(essway_state=state, sway=sway):
+                self.state.write_bytes(pending)
+                result = self.run_command("gaoos-boot-confirm", ESSWAY_STATE=state,
+                                          ESSWAY_HEALTH="inactive", SWAY_HEALTH=sway)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.state.read_bytes(), pending)
 
     def prepare_delta(self):
         base = self.slot_a.read_bytes()

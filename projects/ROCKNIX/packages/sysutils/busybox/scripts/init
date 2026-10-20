@@ -40,6 +40,7 @@ IMAGE_KERNEL="@KERNEL_NAME@"
 IMAGE_SYSTEM="SYSTEM"
 
 BOOT_STEP="start"
+GAOOS_AB_MODE="@GAOOS_AB_BOOT@"
 MD5_FAILED="0"
 RUN_FSCK="yes"
 RUN_FSCK_DISKS=""
@@ -59,11 +60,47 @@ BIGFONT="1080"
 TEE_PID=""
 
 exec 1>/dev/console
-exec 2>/dev/null
+exec 2>&1
+
+# /run is available before either persistent filesystem. Keep console output and
+# errors here until storage can be mounted, and carry the log into systemd.
+start_boot_logging() {
+  local pipe=/run/initramfs.pipe
+  if mkfifo "${pipe}"; then
+    tee /run/initramfs.log <"${pipe}" &
+    TEE_PID=$!
+    exec 1>"${pipe}" 2>&1
+    rm -f "${pipe}"
+  else
+    echo "initramfs: cannot create early-boot log pipe" >&2
+  fi
+}
+
+stop_boot_logging() {
+  exec 1>"$1" 2>&1
+  # debugging duplicates the pipe writer on fd 3; release it before waiting.
+  exec 3>&1
+  if [ -n "${TEE_PID}" ]; then
+    wait "${TEE_PID}"
+    TEE_PID=""
+  fi
+}
+
+persist_boot_log() {
+  if mountpoint -q "$1" && [ -s "$2" ]; then
+    cp "$2" "$1/init.log" || echo "initramfs: cannot persist log to $1" >&2
+  fi
+}
+
+boot_log() {
+  echo "initramfs [${BOOT_STEP}]: $*" >&2
+}
+
+start_boot_logging
 
 # common functions
-. /functions 2>/dev/null
-. /device.init 2>/dev/null
+. /functions
+. /device.init
 
 # Get a serial number if present (eg. RPi) otherwise use MAC address from eth0
 MACHINE_UID="$(awk '/^Serial/{s='0000000' $3; print substr(s, length(s) - 7)}' /proc/cpuinfo 2>/dev/null)"
@@ -94,8 +131,34 @@ error() {
   # Send debug_shell output to stderr, in case caller is redirecting/consuming stdout
   # Return exitcode=1 so that called may detect when an error has occurred
   echo "*** Error in ${BOOT_STEP}: $1: $2 ***" >&2
-  debug_shell >&2
+  if [ "${GAOOS_AB_MODE}" != yes ] || [ "${DEBUG}" = yes ] || [ -n "${BREAK}" ]; then
+    debug_shell >&2
+    AB_DEBUG_SHELL_OPENED=yes
+  fi
   return 1
+}
+
+# Only GaoOS A/B boot failures use automatic retry/rollback. Production boot
+# never opens a privileged shell without an explicit debugging/break option.
+fatal_ab_boot() {
+  boot_log "Boot failed; boot=${GAOOS_FLASH_DEV:-unknown}, slot=${GAOOS_SLOT:-missing}, root=${SLOT_DEV:-unknown}"
+  cat /proc/mounts
+  dmesg | tail -n 80
+  if [ "${DEBUG}" != yes ] && [ -z "${BREAK}" ]; then
+    boot_log "Rebooting in 10 seconds for A/B retry/rollback"
+    sleep 10
+  elif [ "${AB_DEBUG_SHELL_OPENED}" != yes ]; then
+    debug_shell >&2
+  fi
+  stop_boot_logging /dev/console
+  persist_boot_log /storage /run/initramfs.log
+  persist_boot_log /sysroot/storage /run/initramfs.log
+  if [ "${DEBUG}" != yes ] && [ -z "${BREAK}" ]; then
+    sync
+    reboot
+  fi
+  # If reboot fails, or the debug shell exits, never continue into userspace.
+  while :; do sleep 60; done
 }
 
 break_after() {
@@ -123,12 +186,16 @@ mount_common() {
   for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     ERR_ENV=1
 
-    mount ${MOUNT_OPTIONS} $1 $2 >&${SILENT_OUT} 2>&1
+    mount ${MOUNT_OPTIONS} $1 $2 >&${SILENT_OUT}
     [ "$?" -eq "0" ] && ERR_ENV=0 && break
 
     usleep 1000000
   done
   [ "${ERR_ENV}" -eq "0" ] && return 0
+  if [ "${GAOOS_AB_MODE}" = yes ]; then
+    error "mount_common" "Cannot mount $1 on $2 (options: $3, type: ${4:-auto})"
+    return 1
+  fi
   echo "Unable to find $1, powering off and on should correct it." >/dev/console
   StartProgress countdown "Power off in 3s... " 3 "NOW"
   poweroff
@@ -279,17 +346,45 @@ mount_part() {
 }
 
 mount_sysroot() {
-  if [ -n "${GAOOS_SLOT}" ]; then
+  if [ "${GAOOS_AB_MODE}" = yes ] || [ -n "${GAOOS_SLOT}${GAOOS_DEV}" ] || [ -f /flash/ab_state.env ]; then
     # GaoOS A/B boot: mount raw SquashFS partition directly
+    GAOOS_AB_MODE=yes
+    case "${GAOOS_SLOT}" in
+      a|b) ;;
+      *) error "mount_sysroot" "Invalid A/B slot: ${GAOOS_SLOT:-missing}"; return 1 ;;
+    esac
     progress "Mounting A/B slot ${GAOOS_SLOT}"
     # Linux MMC numbering can differ from U-Boot. Use the disk actually mounted
     # at /flash rather than the gaoos.dev hint from the bootloader.
     GAOOS_FLASH_DEV=$(awk '$2 == "/flash" { print $1; exit }' /proc/mounts)
-    GAOOS_FLASH_DEV=$(readlink -f "${GAOOS_FLASH_DEV}")
+    GAOOS_FLASH_DEV=$(readlink -f "${GAOOS_FLASH_DEV}") || {
+      error "mount_sysroot" "Cannot identify A/B boot disk: readlink failed"
+      return 1
+    }
     case "${GAOOS_FLASH_DEV}" in
-      /dev/mmcblk*p1|/dev/loop*p1|/dev/nvme*p1)
+      /dev/mmcblk*p1|/dev/loop*p1)
+        local index="${GAOOS_FLASH_DEV%p1}"
+        index="${index#/dev/mmcblk}"
+        index="${index#/dev/loop}"
+        case "${index}" in
+          ''|*[!0-9]*) error "mount_sysroot" "Cannot identify A/B boot disk from ${GAOOS_FLASH_DEV}"; return 1 ;;
+        esac
+        GAOOS_BOOT_DEV="${GAOOS_FLASH_DEV%p1}" ;;
+      /dev/nvme*p1)
+        local index="${GAOOS_FLASH_DEV#/dev/nvme}"
+        index="${index%p1}"
+        local controller="${index%%n*}" namespace="${index#*n}"
+        case "${controller}:${namespace}" in
+          *[!0-9:]*|:*|*:) error "mount_sysroot" "Cannot identify A/B boot disk from ${GAOOS_FLASH_DEV}"; return 1 ;;
+        esac
+        [ "${index#*n}" != "${index}" ] || { error "mount_sysroot" "Cannot identify A/B boot disk from ${GAOOS_FLASH_DEV}"; return 1; }
         GAOOS_BOOT_DEV="${GAOOS_FLASH_DEV%p1}" ;;
       /dev/sd*1)
+        local index="${GAOOS_FLASH_DEV#/dev/sd}"
+        index="${index%1}"
+        case "${index}" in
+          ''|*[!a-z]*) error "mount_sysroot" "Cannot identify A/B boot disk from ${GAOOS_FLASH_DEV}"; return 1 ;;
+        esac
         GAOOS_BOOT_DEV="${GAOOS_FLASH_DEV%1}" ;;
       *) error "mount_sysroot" "Cannot identify A/B boot disk from ${GAOOS_FLASH_DEV}"; return 1 ;;
     esac
@@ -302,7 +397,6 @@ mount_sysroot() {
     case "${GAOOS_SLOT}" in
       a) SLOT_DEV="/dev/${GAOOS_BOOT_DEV}${PART_SEP}2" ;;
       b) SLOT_DEV="/dev/${GAOOS_BOOT_DEV}${PART_SEP}3" ;;
-      *) SLOT_DEV="/dev/${GAOOS_BOOT_DEV}${PART_SEP}2" ;;
     esac
 
     # Wait for block device (up to 5 seconds)
@@ -312,11 +406,14 @@ mount_sysroot() {
       i=$((i + 1))
     done
 
-    if [ -b "${SLOT_DEV}" ]; then
-      mount -t squashfs -o ro "${SLOT_DEV}" /sysroot
-    else
-      # Fallback: try loop-mount from boot partition
-      mount_part "/flash/${IMAGE_SYSTEM}" "/sysroot" "ro,loop"
+    if [ ! -b "${SLOT_DEV}" ]; then
+      error "mount_sysroot" "A/B slot device unavailable: ${SLOT_DEV} (boot=${GAOOS_FLASH_DEV}, slot=${GAOOS_SLOT})"
+      return 1
+    fi
+    boot_log "Boot device ${GAOOS_FLASH_DEV}; mounting slot ${GAOOS_SLOT} from ${SLOT_DEV}"
+    if ! mount -t squashfs -o ro "${SLOT_DEV}" /sysroot; then
+      error "mount_sysroot" "Cannot mount A/B slot ${GAOOS_SLOT} from ${SLOT_DEV} as SquashFS"
+      return 1
     fi
   elif [ "${SYSTEM_TORAM}" = "yes" ]; then
     cp /flash/${IMAGE_SYSTEM} /dev/${IMAGE_SYSTEM}
@@ -326,7 +423,7 @@ mount_sysroot() {
   fi
 
   if [ -f /flash/post-sysroot.sh ]; then
-    . /flash/post-sysroot.sh
+    . /flash/post-sysroot.sh || return 1
   fi
 
 }
@@ -538,10 +635,8 @@ do_reboot() {
   echo "System reboots now..."
 
   # stop output redirection
-  [ -n "${TEE_PID}" ] && kill ${TEE_PID} &>/dev/null
-  if [ -s /dev/init.log ]; then
-    mv /dev/init.log /storage/init-previous.log
-  fi
+  stop_boot_logging /dev/console
+  persist_boot_log /storage /run/initramfs.log
 
   # syncing filesystem
   sync
@@ -563,6 +658,7 @@ do_reboot() {
 is_key_pressed() {
   # Here we do not have /dev/input/by-path/ yet, so iterate over all event devices
   for evdev in /dev/input/event*; do
+    [ -c "${evdev}" ] || continue
     evtest --query "$evdev" EV_KEY $1
     if [ $? -eq 10 ]; then return 0; fi
   done
@@ -747,10 +843,10 @@ mount_flash() {
 
   wakeonlan
 
-  mount_part "$boot" "/flash" "ro,noatime"
+  mount_part "$boot" "/flash" "ro,noatime" || return 1
 
   if [ -f /flash/post-flash.sh ]; then
-    . /flash/post-flash.sh
+    . /flash/post-flash.sh || return 1
   fi
 }
 
@@ -783,7 +879,7 @@ mount_storage() {
     if [ -n "${OVERLAY}" ]; then
       OVERLAY_DIR=$(cat /sys/class/net/eth0/address | tr -d :)
 
-      mount_part "$disk" "/storage" "rw,noatime"
+      mount_part "$disk" "/storage" "rw,noatime" || return 1
       mkdir -p /storage/${OVERLAY_DIR}
       umount /storage &>/dev/null
 
@@ -798,9 +894,9 @@ mount_storage() {
     fi
 
     if [ -f /flash/mount-storage.sh ]; then
-      . /flash/mount-storage.sh
+      . /flash/mount-storage.sh || return 1
     else
-      mount_part "$disk" "/storage" "rw,noatime"
+      mount_part "$disk" "/storage" "rw,noatime" || return 1
     fi
   else
     # /storage should always be writable
@@ -1183,8 +1279,13 @@ check_update() {
 prepare_sysroot() {
   progress "Preparing system"
 
-  mount --move /flash /sysroot/flash
-  mount --move /storage /sysroot/storage
+  if [ "${GAOOS_AB_MODE}" = yes ]; then
+    mount --move /flash /sysroot/flash || return 1
+    mount --move /storage /sysroot/storage || return 1
+  else
+    mount --move /flash /sysroot/flash
+    mount --move /storage /sysroot/storage
+  fi
 
   if [ ! -d "/sysroot/usr/lib/kernel-overlays/base/lib/modules/$(uname -r)/" -a -f "/sysroot/usr/lib/systemd/systemd" ]; then
     echo ""
@@ -1321,6 +1422,12 @@ for arg in $(cat /proc/cmdline); do
   esac
 done
 
+# Presence of the bootloader's slot/device argument distinguishes A/B from
+# upstream image-file boot, including malformed or empty slot arguments.
+case " $(cat /proc/cmdline) " in
+  *" gaoos.slot="*|*" gaoos.dev="*) GAOOS_AB_MODE=yes ;;
+esac
+
 # hide kernel log messages on console
 if [ "${QUIET}" = "yes" ]; then
   echo '1 4 1 7' > /proc/sys/kernel/printk
@@ -1358,8 +1465,17 @@ for BOOT_STEP in \
     check_update \
     prepare_sysroot 
 do
-  ${BOOT_STEP}
-  [ -n "${DEBUG}" ] && break_after ${BOOT_STEP}
+  [ "${GAOOS_AB_MODE}" = yes ] && boot_log "Starting boot stage"
+  if ! ${BOOT_STEP}; then
+    if [ "${GAOOS_AB_MODE}" = yes ]; then
+      case "${BOOT_STEP}" in
+        mount_flash|mount_sysroot|mount_storage|prepare_sysroot)
+          fatal_ab_boot ;;
+      esac
+    fi
+  fi
+  [ "${BOOT_STEP}" = mount_storage ] && persist_boot_log /storage /run/initramfs.log
+  [ -n "${DEBUG}${BREAK}" ] && break_after ${BOOT_STEP}
 done
 
 BOOT_STEP=final
@@ -1410,14 +1526,9 @@ if [ -f /sysroot/storage/.please_resize_me ]; then
   INIT_UNIT="--unit=fs-resize.target"
 fi
 
-# stop output redirection
-[ -n "${TEE_PID}" ] && kill ${TEE_PID} &>/dev/null
-if [ -s /sysroot/dev/init.log ]; then
-  /usr/bin/busybox mv /sysroot/dev/init.log /sysroot/storage/init.log
-else
-  /usr/bin/busybox rm -f /sysroot/dev/init.log
-  /usr/bin/busybox rm -f /sysroot/storage/init.log
-fi
+# Closing the pipe before waiting drains the log without losing its final lines.
+stop_boot_logging /sysroot/dev/console
+persist_boot_log /sysroot/storage /sysroot/run/initramfs.log
 
 # switch to new sysroot and start real init
 exec /usr/bin/busybox switch_root /sysroot /usr/lib/systemd/systemd ${INIT_ARGS} ${INIT_UNIT}

@@ -28,7 +28,10 @@
     KERNEL_MAKE_EXTRACMD=" $(get_kernel_make_extracmd)"
 
   # Kernel cmdline
-    EXTRA_CMDLINE="quiet console=ttyS2,1500000 console=tty0 systemd.debug_shell=ttyS2"
+    EXTRA_CMDLINE="quiet console=ttyS2,1500000 console=tty0"
+    if [ "${GAOOS_AB_BOOT}" != "yes" ]; then
+      EXTRA_CMDLINE+=" systemd.debug_shell=ttyS2"
+    fi
 
   # Bootloader to use (syslinux / u-boot)
     BOOTLOADER="u-boot"

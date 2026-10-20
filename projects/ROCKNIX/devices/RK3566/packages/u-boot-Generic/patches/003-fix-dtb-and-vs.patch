@@ -1,13 +1,24 @@
 diff --git a/board/anbernic/rgxx3_rk3566/rgxx3-rk3566.c b/board/anbernic/rgxx3_rk3566/rgxx3-rk3566.c
-index 043769dfe0..b44c0b63fe 100644
 --- a/board/anbernic/rgxx3_rk3566/rgxx3-rk3566.c
 +++ b/board/anbernic/rgxx3_rk3566/rgxx3-rk3566.c
-@@ -45,7 +45,7 @@
- #define SARADC_INPUT_SRC_MSK	0x7
- #define SARADC_POWER_CTRL	BIT(3)
+@@ -35,7 +35,7 @@
+ 
+ #define GPIO_WRITEMASK(bits)	((bits) << 16)
  
 -#define DTB_DIR			"rockchip/"
 +#define DTB_DIR			""
  
  struct rg3xx_model {
  	const u16 adc_value;
+@@ -714,7 +714,11 @@
+ 
+ int board_fit_config_name_match(const char *name)
+ {
++	const char *basename = strrchr(name, '/');
+ 	int ret;
++
++	if (basename)
++		name = basename + 1;
+ 
+ 	if (gd->board_type == 0) {
+ 		ret = rgxx3_detect_device();

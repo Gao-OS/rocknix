@@ -1,11 +1,12 @@
 [Unit]
 Description=GaoOS A/B Boot Confirmation
-After=multi-user.target
+After=multi-user.target graphical.target rocknix-autostart.service
 Wants=multi-user.target
+FailureAction=reboot
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/gaoos-boot-confirm
+ExecStart=/bin/bash -a -c 'source /etc/profile && exec /usr/bin/gaoos-boot-confirm'
 RemainAfterExit=yes
 
 [Install]

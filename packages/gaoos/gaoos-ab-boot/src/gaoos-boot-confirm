@@ -16,17 +16,49 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "${LOG}"; }
 
 # Read current slot state
 get_running_slot() {
-  sed -n 's/.*gaoos\.slot=\([ab]\).*/\1/p' /proc/cmdline 2>/dev/null || echo "a"
+  local arg slot="" cmdline
+  read -r -a cmdline < /proc/cmdline
+  for arg in "${cmdline[@]}"; do
+    case "${arg}" in
+      gaoos.slot=*)
+        [ -z "${slot}" ] || return 1
+        slot="${arg#*=}"
+        case "${slot}" in a|b) ;; *) return 1 ;; esac
+        ;;
+    esac
+  done
+  [ -n "${slot}" ] || return 1
+  echo "${slot}"
 }
 
 read_ab_state() {
   active_slot="a"
-  status_a="good"
+  status_a=""
   status_b=""
   retry_a="0"
   retry_b="0"
   max_retries="3"
-  [ -f "${AB_STATE}" ] && . "${AB_STATE}"
+  # Boot metadata is data, never a shell program. Refuse malformed values rather
+  # than overwriting a failed slot with a fabricated successful state.
+  [ -f "${AB_STATE}" ] || return 1
+  local key value seen=" "
+  while IFS='=' read -r key value; do
+    case "${seen}" in *" ${key} "*) return 1 ;; esac
+    seen+="${key} "
+    case "${key}" in
+      active_slot) case "${value}" in a|b) active_slot="${value}" ;; *) return 1 ;; esac ;;
+      status_a|status_b)
+        case "${value}" in good|pending|bad|"") printf -v "${key}" '%s' "${value}" ;; *) return 1 ;; esac ;;
+      retry_a|retry_b) case "${value}" in 0|1|2|3) printf -v "${key}" '%s' "${value}" ;; *) return 1 ;; esac ;;
+      max_retries) [ "${value}" = 3 ] || return 1 ;;
+      *) return 1 ;;
+    esac
+  done < "${AB_STATE}"
+  # U-Boot omits undefined/empty status keys during text export. The four core
+  # fields must still exist; omitted statuses mean empty, never confirmed good.
+  for key in active_slot retry_a retry_b max_retries; do
+    case "${seen}" in *" ${key} "*) ;; *) return 1 ;; esac
+  done
 }
 
 write_ab_state() {
@@ -82,8 +114,8 @@ if [ "${current_status}" = "good" ]; then
 fi
 
 if [ "${current_status}" != "pending" ]; then
-  log "Slot ${running} status is '${current_status}', not pending. Skipping confirmation."
-  exit 0
+  log "FAIL: slot ${running} status is '${current_status}', not pending"
+  exit 1
 fi
 
 # Run health checks (FR4.3)
@@ -91,10 +123,77 @@ log "Running health checks on slot ${running}..."
 
 health_ok=true
 
+# The mounted root must be the selected SquashFS on the actual /flash disk.
+# U-Boot and Linux MMC indexes can differ; gaoos.dev is only a hint.
+flash_dev=$(awk '$2 == "/flash" {print $1; exit}' /proc/mounts)
+flash_dev=$(readlink -f "${flash_dev}") || flash_dev=""
+case "${flash_dev}" in
+  /dev/mmcblk*p1|/dev/loop*p1|/dev/nvme*p1) root_base="${flash_dev%p1}p" ;;
+  /dev/sd*1) root_base="${flash_dev%1}" ;;
+  *) root_base="" ;;
+esac
+if [ "${running}" = a ]; then root_part=2; else root_part=3; fi
+root_dev=$(awk '$2 == "/" && $3 == "squashfs" && ("," $4 ",") ~ /,ro,/ {print $1; exit}' /proc/mounts)
+root_dev=$(readlink -f "${root_dev}") || root_dev=""
+if [ -z "${root_base}" ] || [ "${root_dev}" != "${root_base}${root_part}" ]; then
+  log "FAIL: root ${root_dev:-missing} is not read-only SquashFS slot ${running} on ${flash_dev:-missing}"
+  health_ok=false
+fi
+
 # Check a: storage partition is mounted
 if ! mountpoint -q /storage 2>/dev/null; then
   log "FAIL: /storage is not mounted"
   health_ok=false
+fi
+if ! awk '$2 == "/storage" && $3 == "ext4" && ("," $4 ",") ~ /,rw,/ {ok=1} END {exit !ok}' /proc/mounts; then
+  log "FAIL: /storage is not a writable EXT4 mount"
+  health_ok=false
+elif probe=$(mktemp /storage/.gaoos-health.XXXXXX); then
+  rm -f "${probe}"
+else
+  log "FAIL: /storage cannot create a health-check file"
+  health_ok=false
+fi
+
+for unit in multi-user.target graphical.target rocknix-autostart.service; do
+  if ! systemctl is-active --quiet "${unit}"; then
+    log "FAIL: ${unit} is not active"
+    health_ok=false
+  fi
+done
+if [ -e /run/rocknix/start.games ]; then
+  # RK3566's autostart writes the selected UI into this profile fragment. RGB30
+  # normally runs sway.service and essway.service, rather than emustation.service.
+  UI_SERVICE="${UI_SERVICE:-}"
+  if [ -z "${UI_SERVICE}" ] && [ -f /storage/.config/profile.d/090-ui_service ]; then
+    . /storage/.config/profile.d/090-ui_service
+  fi
+  read -r -a ui_units <<< "${UI_SERVICE}"
+  if [ "${#ui_units[@]}" = 0 ]; then
+    log "FAIL: requested frontend has no configured UI_SERVICE"
+    health_ok=false
+  fi
+  for unit in "${ui_units[@]}"; do
+    # Sway's desktop startup deliberately masks essway and resets the desktop
+    # setting for the next boot. Require both that mask and the desktop template
+    # copied into the current config (before appended output settings), rather
+    # than accepting an accidentally stopped or masked kiosk frontend.
+    if [ "${unit}" = essway.service ] &&
+       [ "$(systemctl is-enabled essway.service 2>/dev/null || true)" = masked ] &&
+       systemctl is-active --quiet sway.service &&
+       [ -r /usr/share/sway/config.desktop ] && [ -r /storage/.config/sway/config ]; then
+      desktop_template=$(cat /usr/share/sway/config.desktop)
+      sway_config=$(cat /storage/.config/sway/config)
+      if [ -n "${desktop_template}" ] && [[ "${sway_config}" = "${desktop_template}"* ]]; then
+        log "Desktop session selected; essway.service is intentionally masked"
+        continue
+      fi
+    fi
+    if ! systemctl is-active --quiet "${unit}"; then
+      log "FAIL: requested frontend ${unit} is not active"
+      health_ok=false
+    fi
+  done
 fi
 
 # Check b: uptime is at least 10 seconds
@@ -125,4 +224,5 @@ if [ "${health_ok}" = "true" ]; then
 else
   log "Health checks failed. Slot ${running} remains pending."
   log "Will retry on next boot. After ${max_retries} failures, auto-rollback triggers."
+  exit 1
 fi

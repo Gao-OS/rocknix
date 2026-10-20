@@ -8,6 +8,12 @@ PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://gitlab.freedesktop.org/libevdev/evtest/"
 PKG_URL="https://gitlab.freedesktop.org/libevdev/evtest/-/archive/${PKG_NAME}-${PKG_VERSION}/${PKG_NAME}-${PKG_NAME}-${PKG_VERSION}.tar.gz"
 PKG_DEPENDS_TARGET="toolchain libxml2"
+PKG_DEPENDS_INIT="toolchain"
 PKG_LONGDESC="A simple tool for input event debugging."
 PKG_TOOLCHAIN="autotools"
 PKG_BUILD_FLAGS="-sysroot -cfg-libs"
+
+makeinstall_init() {
+  mkdir -p ${INSTALL}/usr/bin
+  cp evtest ${INSTALL}/usr/bin/
+}
