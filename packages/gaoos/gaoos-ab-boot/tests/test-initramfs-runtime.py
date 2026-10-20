@@ -96,7 +96,7 @@ def main():
         mountpoint = next(p for p in (root / 'usr/bin/mountpoint', root / 'usr/sbin/mountpoint')
                           if p.is_symlink())
         result = subprocess.run([str(args.qemu.resolve()), '-0', 'mountpoint', '-L', td,
-                                 str(target_path(root, mountpoint.relative_to(root))), '-q', '/'],
+                                 str(target_path(root, mountpoint.relative_to(root))), '-q', '/proc'],
                                 capture_output=True, text=True, timeout=5)
         assert result.returncode == 0, result.stderr
 
