@@ -58,27 +58,37 @@ BREAK_TRIPPED="no"
 BIGFONT="1080"
 
 TEE_PID=""
+GAOOS_BOOT=no
+[ "@DISTRONAME@" = GaoOS ] && GAOOS_BOOT=yes
+GAOOS_VERBOSE=no
+BOOT_CONSOLE=yes
+[ "${GAOOS_BOOT}" = yes ] && BOOT_CONSOLE=no
 
 exec 1>/dev/console
 exec 2>&1
 
-# /run is available before either persistent filesystem. Keep console output and
-# errors here until storage can be mounted, and carry the log into systemd.
+# Quiet boot writes directly to the log: no FIFO or background reader is needed.
+# Verbose boot mirrors subsequent output, appending to the same diagnostic log.
 start_boot_logging() {
+  exec 1>>/run/initramfs.log 2>&1
+  exec 3>&1
+  [ "${BOOT_CONSOLE:-yes}" = yes ] || return 0
   local pipe=/run/initramfs.pipe
   if mkfifo "${pipe}"; then
-    tee /run/initramfs.log <"${pipe}" &
+    tee -a /run/initramfs.log <"${pipe}" >>/dev/console &
     TEE_PID=$!
     exec 1>"${pipe}" 2>&1
+    exec 3>&1
     rm -f "${pipe}"
   else
     echo "initramfs: cannot create early-boot log pipe" >&2
+    echo "initramfs: cannot mirror early-boot log" >>/dev/console
   fi
 }
 
 stop_boot_logging() {
-  exec 1>"$1" 2>&1
-  # debugging duplicates the pipe writer on fd 3; release it before waiting.
+  exec 1>>"$1" 2>&1
+  # Release every writer before waiting for tee to flush its last message.
   exec 3>&1
   if [ -n "${TEE_PID}" ]; then
     wait "${TEE_PID}"
@@ -86,8 +96,16 @@ stop_boot_logging() {
   fi
 }
 
+enable_boot_console() {
+  [ "${BOOT_CONSOLE:-yes}" = yes ] && return 0
+  clear >>/dev/console
+  cat /run/initramfs.log >>/dev/console
+  BOOT_CONSOLE=yes
+  start_boot_logging
+}
+
 persist_boot_log() {
-  if mountpoint -q "$1" && [ -s "$2" ]; then
+  if /usr/bin/busybox mountpoint -q "$1" && [ -s "$2" ]; then
     cp "$2" "$1/init.log" || echo "initramfs: cannot persist log to $1" >&2
   fi
 }
@@ -101,6 +119,7 @@ start_boot_logging
 # common functions
 . /functions
 . /device.init
+[ "${GAOOS_BOOT}" = yes ] && . /gaoos-boot-mode
 
 # Get a serial number if present (eg. RPi) otherwise use MAC address from eth0
 MACHINE_UID="$(awk '/^Serial/{s='0000000' $3; print substr(s, length(s) - 7)}' /proc/cpuinfo 2>/dev/null)"
@@ -110,7 +129,7 @@ clear >/dev/console
 
 # script functions
 progress() {
-  if test "${PROGRESS}" = "yes"; then
+  if [ "${GAOOS_BOOT}" = yes ] || [ "${PROGRESS}" = yes ]; then
     echo "### $1 ###" >&2
   fi
 }
@@ -120,6 +139,7 @@ debug_msg() {
 }
 
 debug_shell() {
+  enable_boot_console
   echo "### Starting debugging shell for boot step: ${BOOT_STEP}... type  exit  to quit ###"
   showcursor
   setsid cttyhack sh
@@ -130,6 +150,7 @@ error() {
   # $1:action which caused error, $2:message
   # Send debug_shell output to stderr, in case caller is redirecting/consuming stdout
   # Return exitcode=1 so that called may detect when an error has occurred
+  enable_boot_console
   echo "*** Error in ${BOOT_STEP}: $1: $2 ***" >&2
   if [ "${GAOOS_AB_MODE}" != yes ] || [ "${DEBUG}" = yes ] || [ -n "${BREAK}" ]; then
     debug_shell >&2
@@ -141,6 +162,7 @@ error() {
 # Only GaoOS A/B boot failures use automatic retry/rollback. Production boot
 # never opens a privileged shell without an explicit debugging/break option.
 fatal_ab_boot() {
+  enable_boot_console
   boot_log "Boot failed; boot=${GAOOS_FLASH_DEV:-unknown}, slot=${GAOOS_SLOT:-missing}, root=${SLOT_DEV:-unknown}"
   cat /proc/mounts
   dmesg | tail -n 80
@@ -619,7 +641,21 @@ hdmi_con() {
   fi
 }
 
+wait_for_framebuffer() {
+  local attempt=0
+  while [ ! -e /dev/fb0 ] && [ "${attempt}" -lt 20 ]; do
+    usleep 50000
+    attempt=$((attempt + 1))
+  done
+}
+
 load_splash() {
+  if [ "${GAOOS_BOOT}" = yes ]; then
+    [ "${BOOT_CONSOLE}" = yes ] && return 0
+    wait_for_framebuffer
+    /usr/bin/gaoos-splash
+    return 0
+  fi
   /usr/bin/rocknix-splash
 
   echo -en "\033[1000H\033[2K$(cat /sysroot/etc/issue)\n\n" >/dev/console
@@ -656,10 +692,17 @@ do_reboot() {
 
 
 is_key_pressed() {
+  # An optional exact device lets GaoOS restrict START to the onboard joypad.
+  if [ -n "$2" ]; then
+    [ -c "$2" ] || return 1
+    /usr/bin/busybox timeout -s KILL 1 /usr/bin/evtest --query "$2" EV_KEY "$1"
+    [ "$?" -eq 10 ]
+    return $?
+  fi
   # Here we do not have /dev/input/by-path/ yet, so iterate over all event devices
   for evdev in /dev/input/event*; do
     [ -c "${evdev}" ] || continue
-    evtest --query "$evdev" EV_KEY $1
+    /usr/bin/evtest --query "$evdev" EV_KEY "$1"
     if [ $? -eq 10 ]; then return 0; fi
   done
   return 1
@@ -679,6 +722,7 @@ recovery_mode() {
     return
   fi
 
+  enable_boot_console
   StartProgress spinner "Exporting storage as USB MSC... "
 
   sleep 1
@@ -742,6 +786,7 @@ recovery_mode() {
 
 
 force_fsck() {
+  enable_boot_console
   echo "Filesystem corruption has been detected!"
   echo "To prevent an automatic repair attempt continuing,"
   echo "press any key or power off your system within the next 120 seconds"
@@ -965,13 +1010,13 @@ do_cleanup() {
   done
 
   # update is mounted last on top of mnt and avfs, so it should be unmounted first
-  if mountpoint -q /update; then
+  if /usr/bin/busybox mountpoint -q /update; then
     umount /update &>/dev/null
   fi
 
   # mnt is a partition of .img loop, it uses avfs
   if [ -d ${UPDATE_ROOT}/.tmp/mnt ]; then
-    if mountpoint -q ${UPDATE_ROOT}/.tmp/mnt ; then
+    if /usr/bin/busybox mountpoint -q ${UPDATE_ROOT}/.tmp/mnt ; then
       # busybox umount deletes loop device automatically
       umount ${UPDATE_ROOT}/.tmp/mnt &>/dev/null
     fi
@@ -979,7 +1024,7 @@ do_cleanup() {
 
   # among update stuff, avfs is mounted first, so, is unmounted last
   if [ -d ${UPDATE_ROOT}/.tmp/avfs ]; then
-    if mountpoint -q ${UPDATE_ROOT}/.tmp/avfs ; then
+    if /usr/bin/busybox mountpoint -q ${UPDATE_ROOT}/.tmp/avfs ; then
       umount ${UPDATE_ROOT}/.tmp/avfs &>/dev/null
     fi
   fi
@@ -992,7 +1037,7 @@ do_cleanup() {
   rm -rf ${UPDATE_ROOT}/* &>/dev/null
 
   # All previous unmounts were needed to safely unmount storage partition
-  if mountpoint -q /storage; then
+  if /usr/bin/busybox mountpoint -q /storage; then
     umount /storage &>/dev/null
   fi
 
@@ -1300,6 +1345,44 @@ prepare_sysroot() {
 
 }
 
+# Keep the two services that explicitly write to the tty in the journal during
+# quiet boot. /run follows us into the real root; verbose boot uses their defaults.
+configure_systemd_boot_output() {
+  if [ "${BOOT_CONSOLE}" = yes ]; then
+    INIT_ARGS="${INIT_ARGS} --show-status=yes"
+  else
+    # systemd supports error-only status: failed units must remain visible.
+    INIT_ARGS="${INIT_ARGS} --show-status=error"
+    local unit
+    for unit in show-version userconfig; do
+      mkdir -p "/run/systemd/system/${unit}.service.d"
+      printf '[Service]\nStandardOutput=journal\nStandardError=journal\n' \
+        >"/run/systemd/system/${unit}.service.d/quiet-boot.conf"
+    done
+  fi
+}
+
+select_boot_mode() {
+  [ "${GAOOS_BOOT}" = yes ] || return 0
+  if [ "${GAOOS_VERBOSE}" != yes ] && detect_gaoos_start; then
+    GAOOS_VERBOSE=yes
+  fi
+  if [ "${GAOOS_VERBOSE}" = yes ]; then
+    PROGRESS=yes
+    QUIET=no
+    enable_boot_console
+    echo '8 4 1 7' >/proc/sys/kernel/printk
+    boot_log "Verbose boot enabled (START or gaoos.verbose=1); buffered kernel log follows"
+    dmesg
+  elif [ "${DEBUG}" = yes ] || [ "${PROGRESS}" = yes ] || [ -n "${BREAK}" ] || [ "${FORCE_RECOVERY}" = yes ]; then
+    enable_boot_console
+  else
+    boot_log "Quiet boot; buffered kernel log follows"
+    dmesg
+  fi
+  configure_systemd_boot_output
+}
+
 # Do init tasks to bring up system
 
 # run platform_init script if exists
@@ -1373,6 +1456,9 @@ for arg in $(cat /proc/cmdline); do
     quiet)
       QUIET=yes
       ;;
+    gaoos.verbose=1)
+      GAOOS_VERBOSE=yes
+      ;;
     gaoos.slot=*)
       GAOOS_SLOT="${arg#*=}"
       ;;
@@ -1429,11 +1515,11 @@ case " $(cat /proc/cmdline) " in
 esac
 
 # hide kernel log messages on console
-if [ "${QUIET}" = "yes" ]; then
+if [ "${QUIET}" = yes ] || [ "${GAOOS_BOOT}" = yes ]; then
   echo '1 4 1 7' > /proc/sys/kernel/printk
 fi
 
-if test "${DEBUG}" = "yes"; then
+if [ "${DEBUG}" = yes ] || [ "${GAOOS_BOOT}" = yes ]; then
   exec 3>&1
 else
   exec 3>/dev/null
@@ -1453,6 +1539,7 @@ debug_msg "Unique identifier for this client: ${MACHINE_UID:-NOT AVAILABLE}"
 # main boot sequence
 for BOOT_STEP in \
     load_modules \
+    select_boot_mode \
     recovery_mode \
     check_disks \
     mount_flash \

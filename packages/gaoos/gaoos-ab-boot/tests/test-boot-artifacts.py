@@ -51,6 +51,25 @@ class BootArtifacts(unittest.TestCase):
     def test_valid_kernel_and_embedded_initramfs(self):
         self.module.validate_kernel(self.image(), expected_init=b'#!/bin/sh\n')
 
+    def test_quiet_boot_rejects_missing_helper_and_old_splash(self):
+        entries = self.module.validate_kernel(self.image())
+        with self.assertRaisesRegex(ValueError, 'gaoos-boot-mode'):
+            self.module.validate_quiet_boot(entries)
+        entries['gaoos-boot-mode'] = (0o100644, b'detect_gaoos_start() { :; }\n')
+        entries['usr/bin/mountpoint'] = (0o120777, b'busybox')
+        entries['usr/bin/timeout'] = (0o120777, b'busybox')
+        entries['usr/bin/rocknix-splash'] = (0o100755, b'old logo')
+        with self.assertRaisesRegex(ValueError, 'ROCKNIX'):
+            self.module.validate_quiet_boot(entries)
+        del entries['usr/bin/rocknix-splash']
+        self.module.validate_quiet_boot(entries)
+
+    def test_quiet_boot_requires_real_applet_links(self):
+        entries = self.module.validate_kernel(self.image())
+        entries['gaoos-boot-mode'] = (0o100644, b'detect_gaoos_start() { :; }\n')
+        with self.assertRaisesRegex(ValueError, 'mountpoint'):
+            self.module.validate_quiet_boot(entries)
+
     def test_linux_gen_init_cpio_null_terminated_symlink(self):
         entries = self.module.validate_kernel(self.image(fsck_target=b'e2fsck\0'))
         self.assertEqual(entries['usr/sbin/fsck.ext4'][1], b'e2fsck')

@@ -244,7 +244,8 @@ if [ "${GAOOS_AB_BOOT}" = "yes" ] && [ "${DEVICE}" = "RK3566" ]; then
   python3 "${SCRIPTS}/gaoos-validate-boot.py" \
     --kernel "${TARGET_IMG}/${IMAGE_NAME}.kernel" \
     --init "${BUILD}/initramfs/init" \
-    --busybox "${BUILD}/initramfs/usr/bin/busybox"
+    --busybox "${BUILD}/initramfs/usr/bin/busybox" \
+    --quiet-boot --initramfs "${BUILD}/initramfs"
 fi
 
 # Set mksquashfs options for each compression method

@@ -11,15 +11,32 @@ PKG_LONGDESC="rocknix-joypad: ROCKNIX joypad driver"
 PKG_TOOLCHAIN="manual"
 PKG_IS_KERNEL_PKG="yes"
 
+if [ "${DISTRO}" = "GaoOS" -a "${DEVICE}" = "RK3566" ]; then
+  # linux unpacks this source for its built-in early RGB30 driver. Avoid the
+  # automatic kernel-package unpack dependency back to linux (a cycle).
+  PKG_IS_KERNEL_PKG=""
+  PKG_DEPENDS_TARGET="toolchain linux"
+  PKG_NEED_UNPACK="${LINUX_DEPENDS}"
+fi
+
 pre_make_target() {
   unset LDFLAGS
 }
 
 make_target() {
-  kernel_make -C $(kernel_path) M=${PKG_BUILD}
+  if [ "${DISTRO}" = "GaoOS" -a "${DEVICE}" = "RK3566" ]; then
+    kernel_make -C $(kernel_path) M=${PKG_BUILD} rocknix-joypad.ko
+  else
+    kernel_make -C $(kernel_path) M=${PKG_BUILD}
+  fi
 }
 
 makeinstall_target() {
   mkdir -p ${INSTALL}/$(get_full_module_dir)/${PKG_NAME}
-    cp *.ko ${INSTALL}/$(get_full_module_dir)/${PKG_NAME}
+    if [ "${DISTRO}" = "GaoOS" -a "${DEVICE}" = "RK3566" ]; then
+      # singleadc is already built in; a duplicate module would re-register it.
+      cp rocknix-joypad.ko ${INSTALL}/$(get_full_module_dir)/${PKG_NAME}
+    else
+      cp *.ko ${INSTALL}/$(get_full_module_dir)/${PKG_NAME}
+    fi
 }

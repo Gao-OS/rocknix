@@ -18,7 +18,7 @@ def function(name):
 
 
 def run(code):
-    return subprocess.run(['bash', '-s'], input=code, text=True,
+    return subprocess.run(['bash', '-s'], input='enable_boot_console() { :; }\n' + code, text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           timeout=5)
 
@@ -28,6 +28,7 @@ class EarlyBootDiagnostics(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             start = function('start_boot_logging').replace('/run/', td + '/')
             console = Path(td) / 'console'
+            start = start.replace('/dev/console', str(console))
             result = run(start + '\n' + function('stop_boot_logging') + '''
 TEE_PID=""
 start_boot_logging
@@ -39,7 +40,7 @@ stop_boot_logging %s
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertEqual((Path(td) / 'initramfs.log').read_text(),
                              'stdout evidence\nstderr evidence\n')
-            self.assertIn('stderr evidence', result.stdout)
+            self.assertIn('stderr evidence', console.read_text())
             self.assertFalse((Path(td) / 'initramfs.pipe').exists())
 
     def test_log_persists_only_on_mounted_storage(self):
@@ -49,7 +50,7 @@ stop_boot_logging %s
             storage = Path(td) / 'storage'
             storage.mkdir()
             for mounted in (False, True):
-                result = run(function('persist_boot_log') + '''
+                result = run(function('persist_boot_log').replace('/usr/bin/busybox mountpoint', 'mountpoint') + '''
 mountpoint() { return %s; }
 persist_boot_log %s %s
 ''' % (0 if mounted else 1, shlex.quote(str(storage)), shlex.quote(str(log))))

@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Sourced by init after platform/module setup and before the graphical splash.
+
+detect_gaoos_start() {
+  local compatible event input name phys device attempt sample
+  [ -r /sys/firmware/devicetree/base/compatible ] || return 1
+  compatible="$(/usr/bin/busybox tr '\000' '\n' </sys/firmware/devicetree/base/compatible)"
+  case "
+${compatible}
+" in
+    *'
+powkiddy,rgb30
+'*) ;;
+    *) return 1 ;;
+  esac
+
+  # devtmpfs and the built-in singleadc driver require no udev/InputPlumber.
+  # Its platform ancestry is essential: its input ID deliberately says USB.
+  device=""
+  attempt=0
+  while [ "${attempt}" -lt 20 ]; do
+    for event in /sys/class/input/event*; do
+      [ -d "${event}" ] || continue
+      input="$(/usr/bin/busybox readlink -f "${event}/device")"
+      case "${input}" in
+        /sys/devices/platform/rocknix-singleadc-joypad/input/input[0-9]*) ;;
+        *) continue ;;
+      esac
+      [ -r "${event}/device/name" ] && [ -r "${event}/device/phys" ] || continue
+      read -r name <"${event}/device/name"
+      read -r phys <"${event}/device/phys"
+      [ "${name}" = retrogame_joypad ] || continue
+      [ "${phys}" = rocknix-singleadc-joypad/input0 ] || continue
+      device="/dev/input/${event##*/}"
+      [ -c "${device}" ] && break
+      device=""
+    done
+    [ -n "${device}" ] && break
+    attempt=$((attempt + 1))
+    /usr/bin/busybox usleep 50000
+  done
+  [ -n "${device}" ] || return 1
+
+  # EVIOCGKEY reads the current state, including START held before init.
+  # A release/error aborts immediately; query timeout cannot accumulate.
+  sample=0
+  while [ "${sample}" -lt 11 ]; do
+    is_key_pressed 315 "${device}" || return 1
+    sample=$((sample + 1))
+    [ "${sample}" -eq 11 ] && return 0
+    /usr/bin/busybox usleep 50000
+  done
+  return 1
+}

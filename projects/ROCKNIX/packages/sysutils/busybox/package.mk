@@ -222,6 +222,7 @@ makeinstall_init() {
 
   cp ${PKG_DIR}/scripts/functions ${INSTALL}
   cp ${PKG_DIR}/scripts/init ${INSTALL}
+  cp ${PKG_DIR}/scripts/gaoos-boot-mode ${INSTALL}
 
   if [ -e "${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/device.init" ]
   then

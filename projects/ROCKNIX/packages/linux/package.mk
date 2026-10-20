@@ -91,6 +91,13 @@ elif [ "${DEVICE}" = "SM8250" -o "${DEVICE}" = "H700" -o "${DEVICE}" = "SM8650" 
   PKG_DEPENDS_UNPACK+=" kernel-firmware"
 fi
 
+# RGB30 START must be readable before userspace or the graphical splash.
+# Track the pinned joypad recipe/source in the kernel's unpack stamp as well.
+if [ "${DISTRO}" = "GaoOS" -a "${DEVICE}" = "RK3566" ]; then
+  PKG_DEPENDS_UNPACK+=" rocknix-joypad"
+  PKG_NEED_UNPACK+=" $(get_pkg_directory rocknix-joypad)"
+fi
+
 # SM8650/SM8750 build device-specific firmware blobs into the kernel, so the
 # extra-firmware package must be unpacked before the kernel is built.
 if [ "${DEVICE}" = "SM8650" -o "${DEVICE}" = "SM8750" ]; then
@@ -116,6 +123,13 @@ post_patch() {
   if [ "${DEVICE}" = "RK3326" -o "${DEVICE}" = "RK3566" -o "${DEVICE}" = "RK3576" ]; then
     cp -v $(get_pkg_directory generic-dsi)/sources/panel-generic-dsi.c ${PKG_BUILD}/drivers/gpu/drm/panel/
     echo "obj-y" += panel-generic-dsi.o >> ${PKG_BUILD}/drivers/gpu/drm/panel/Makefile
+  fi
+
+  if [ "${DISTRO}" = "GaoOS" -a "${DEVICE}" = "RK3566" ]; then
+    cp -v $(get_build_dir rocknix-joypad)/rocknix-singleadc-joypad.c \
+          $(get_build_dir rocknix-joypad)/rocknix-joypad.h \
+          ${PKG_BUILD}/drivers/input/joystick/
+    echo 'obj-y += rocknix-singleadc-joypad.o' >> ${PKG_BUILD}/drivers/input/joystick/Makefile
   fi
 
   DTS_SOURCE_DIR="${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/linux/dts"

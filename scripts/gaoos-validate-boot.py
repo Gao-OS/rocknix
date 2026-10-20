@@ -22,11 +22,11 @@ REQUIRED_APPLETS = {
     'grep', 'head', 'kill', 'ln', 'losetup', 'ls', 'md5sum', 'mkdir', 'mkfifo',
     'mknod', 'modprobe', 'mount', 'mountpoint', 'mv', 'poweroff', 'readlink',
     'reboot', 'rm', 'sed', 'setsid', 'sh', 'sleep', 'switch_root', 'sync',
-    'tee', 'tr', 'umount', 'usleep',
+    'tee', 'timeout', 'tr', 'umount', 'usleep',
 }
 LZO_MAGIC = b'\x89LZO\x00\r\n\x1a\n'
 REQUIRED_EXTERNALS = ('usr/sbin/fsck', 'usr/sbin/fsck.ext4', 'usr/sbin/fsck.vfat',
-                      'usr/sbin/blkid', 'usr/bin/avfsd', 'usr/bin/rocknix-splash',
+                      'usr/sbin/blkid', 'usr/bin/avfsd', 'usr/bin/gaoos-splash',
                       'usr/bin/evtest')
 
 
@@ -166,6 +166,21 @@ def validate_kernel(image, expected_init=None, expected_busybox=None):
     return entries
 
 
+def validate_quiet_boot(entries, staged=None):
+    helper = entries.get('gaoos-boot-mode')
+    require(helper is not None and stat.S_ISREG(helper[0]) and
+            b'detect_gaoos_start()' in helper[1], 'Missing embedded gaoos-boot-mode helper')
+    require('usr/bin/rocknix-splash' not in entries, 'ROCKNIX splash present in GaoOS initramfs')
+    for name in ('mountpoint', 'timeout'):
+        link = entries.get('usr/bin/' + name)
+        require(link is not None and stat.S_ISLNK(link[0]) and link[1] == b'busybox',
+                'Missing embedded BusyBox applet link: ' + name)
+    if staged is not None:
+        for name in ('init', 'gaoos-boot-mode', 'usr/bin/busybox', 'usr/bin/evtest', 'usr/bin/gaoos-splash'):
+            require(entries[name][1] == (staged / name).read_bytes(),
+                    'Embedded quiet-boot dependency differs from staging: ' + name)
+
+
 def validate_script(data):
     require(len(data) >= 72, 'Truncated U-Boot boot.scr')
     magic, crc, _, size, _, _, payload_crc = struct.unpack_from('>7I', data)
@@ -216,6 +231,8 @@ def main():
     parser.add_argument('--kernel', type=Path)
     parser.add_argument('--init', type=Path)
     parser.add_argument('--busybox', type=Path)
+    parser.add_argument('--quiet-boot', action='store_true', help='Require GaoOS boot helper and actual applet symlinks')
+    parser.add_argument('--initramfs', type=Path, help='Compare embedded quiet-boot dependencies with this staging directory')
     parser.add_argument('--boot-script', type=Path)
     parser.add_argument('--qemu', help='Path to qemu-aarch64 user-mode emulator')
     parser.add_argument('--report', type=Path)
@@ -230,6 +247,9 @@ def main():
                       init_sha256=hashlib.sha256(entries['init'][1]).hexdigest(),
                       busybox_sha256=hashlib.sha256(entries['usr/bin/busybox'][1]).hexdigest(),
                       initramfs_entries=len(entries), applets=sorted(applet_names(entries['usr/bin/busybox'][1])))
+        if args.quiet_boot:
+            validate_quiet_boot(entries, args.initramfs)
+            report['quiet_boot'] = 'PASS'
         if args.qemu:
             report['runtime'] = runtime(entries, args.qemu)
     if args.boot_script:

@@ -7,7 +7,12 @@ PKG_VERSION=""
 PKG_LICENSE="GPL"
 PKG_SITE="http://www.openelec.tv"
 PKG_URL=""
-PKG_DEPENDS_INIT="libc:init busybox:init util-linux:init e2fsprogs:init dosfstools:init spleen-font:init avfs:init rocknix-splash:init evtest:init"
+PKG_DEPENDS_INIT="libc:init busybox:init util-linux:init e2fsprogs:init dosfstools:init spleen-font:init avfs:init evtest:init"
+if [ "${DISTRO}" = "GaoOS" ]; then
+  PKG_DEPENDS_INIT+=" gaoos-splash:init"
+else
+  PKG_DEPENDS_INIT+=" rocknix-splash:init"
+fi
 PKG_DEPENDS_TARGET="toolchain initramfs:init"
 PKG_SECTION="virtual"
 PKG_LONGDESC="Metapackage for installing initramfs"
