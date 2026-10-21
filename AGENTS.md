@@ -254,3 +254,23 @@ Build targets: RK3326, RK3566, RK3588, RK3399, S922X, SM8250, SM8550, H700,
 and SM8650.
 
 GaoOS initial target: RK3566, including the Anbernic RG353 series.
+
+## Agent Note
+
+Agent Note project: gao-os
+
+Scope recall to both `project=gao-os` and `branch=rocknix`.
+New notes must include labels `[["project", "gao-os"], ["branch", "rocknix"]]`.
+
+Use the shared `agent-note` skill for reviewer-first project engineering knowledge.
+Before substantial design or debugging, recall relevant project notes.
+At accepted decisions, significant implementation boundaries, or reproducible
+blocker handoffs, evaluate durable findings and create/update notes only when the
+skill's quality gate passes. For meaningful implementations, maintain a coherent
+human-reviewable explanation of architecture, design rationale, actual behavior,
+verification and limits; do not save a separate task-status note after each fix.
+This authorizes scoped capture, not whole-project curation or deletion.
+No note is required for an ordinary completed task.
+Contributors return candidates; the coordinating agent writes shared notes.
+Apply recalled guidance only after checking its sources and target-version scope.
+If the skill or MCP is unavailable, report the limitation without claiming a write.
