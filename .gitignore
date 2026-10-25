@@ -46,6 +46,7 @@ projects/**/*.old
 /.cache
 /.doc_cache
 /.env
+/local-setting.env
 /.es_cache
 /.config
 

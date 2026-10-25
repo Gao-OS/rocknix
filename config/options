@@ -139,6 +139,12 @@ if [ -f "${HOME}/.gaoos/options" ]; then
   . "${HOME}/.gaoos/options"
 fi
 
+# read repository-local environment settings after legacy options
+if [ -f "${ROOT}/local-setting.env" ]; then
+  . "${ROOT}/local-setting.env"
+  export LOCAL_WIFI_SSID LOCAL_WIFI_KEY LOCAL_SSH_KEYS_FILE
+fi
+
 if [ "${LOCAL_CCACHE_SUPPORT}" = "yes" ] && [ -z "${CCACHE_DISABLE}" ]; then
   # like LOCAL_CC check for local ccache only on the very first
   # call to config/options, before toolchain has been added to the path,

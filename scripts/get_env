@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+if [ -f ./local-setting.env ]; then
+  . ./local-setting.env
+  export LOCAL_WIFI_SSID LOCAL_WIFI_KEY LOCAL_SSH_KEYS_FILE
+fi
+
 for var in $(compgen -e); do 
   [[ "$var" == PATH  ]] && continue
   echo "$var=${!var}"
