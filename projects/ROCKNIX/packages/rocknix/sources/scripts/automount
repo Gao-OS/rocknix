@@ -53,8 +53,38 @@ function start_ms() {
   if [ -e "/storage/.ms_unsupported" ] || \
      [ ! "${MS_ENABLED}" = 1 ]
   then
-    log $0 "Executing bind mount of ${MOUNT_PATH} to ${MS_PATH}"
-    mount --bind ${MOUNT_PATH}/roms ${MS_PATH}
+    local ROMS_PATH="${MOUNT_PATH}/roms"
+    if [ "${OS_NAME}" = "GaoOS" ] && [ "${1}" = "external" ] && \
+       [ -r "/usr/config/emulationstation/es_systems.cfg" ]
+    then
+      local SYSTEM_DIR FLAT_LAYOUT=0 NESTED_LAYOUT=0
+      # Recognize game directories from ES, not support folders such as bios.
+      # Prefer a populated roms/ layout, but ignore empty auto-created directories.
+      while IFS= read -r SYSTEM_DIR
+      do
+        SYSTEM_DIR="${SYSTEM_DIR%/}"
+        case "${SYSTEM_DIR}" in
+          "" | . | .. | */*) continue ;;
+        esac
+        if [ -d "${MOUNT_PATH}/roms/${SYSTEM_DIR}" ] && \
+           [ -n "$(find "${MOUNT_PATH}/roms/${SYSTEM_DIR}/" -mindepth 1 -maxdepth 1 -print -quit)" ]
+        then
+          NESTED_LAYOUT=1
+          break
+        fi
+        if [ "${FLAT_LAYOUT}" = 0 ] && [ -d "${MOUNT_PATH}/${SYSTEM_DIR}" ] && \
+           [ -n "$(find "${MOUNT_PATH}/${SYSTEM_DIR}/" -mindepth 1 -maxdepth 1 -print -quit)" ]
+        then
+          FLAT_LAYOUT=1
+        fi
+      done < <(sed -n 's:^[[:space:]]*<path>/storage/roms/\([^<]*\)</path>[[:space:]]*$:\1:p' /usr/config/emulationstation/es_systems.cfg)
+      if [ "${FLAT_LAYOUT}" = 1 ] && [ "${NESTED_LAYOUT}" = 0 ]
+      then
+        ROMS_PATH="${MOUNT_PATH}"
+      fi
+    fi
+    log $0 "Executing bind mount of ${ROMS_PATH} to ${MS_PATH}"
+    mount --bind "${ROMS_PATH}" "${MS_PATH}"
   else
     log $0 "Enabling merged storage of /storage/games-${LOWER} and /storage/games-${UPPER} to ${MS_PATH}."
 
