@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Derive two test-only RGB30 OTA candidates from one validated factory image."""
+"""Derive RGB30 hardware qualification candidates from one validated factory image."""
 import argparse
 import importlib.util
 import json
@@ -21,6 +21,7 @@ DATA_MARKER = b'# START OF DATA - DO NOT MODIFY\n'
 VERSION = re.compile(rb'[a-zA-Z0-9][a-zA-Z0-9._+-]{0,95}\n')
 REPLACED = (b'etc/gaoos-version', b'etc/gaoos-ota-sequence', b'etc/os-release')
 MARKER = b'etc/gaoos-ota-qualification'
+FAIL_BOOT_UNIT = b'etc/systemd/system/rocknix-autostart.service'
 
 
 def run(*argv):
@@ -76,7 +77,7 @@ def squashfs_settings(system):
     return compressor[1].decode(), block_size[1].decode()
 
 
-def write_pseudo(source, target, replacements):
+def write_pseudo(source, target, replacements, fail_boot):
     # The generated metadata uses offsets relative to the start of its data
     # section. Keep all original data at the same offsets and append new bytes.
     edits = set()
@@ -100,6 +101,8 @@ def write_pseudo(source, target, replacements):
             path, _, detail = line.partition(b' ')
             if path == MARKER:
                 raise ValueError('Factory image already contains a qualification marker')
+            if fail_boot and path == FAIL_BOOT_UNIT:
+                raise ValueError('Factory image already overrides the required autostart unit')
             if path in REPLACED and detail.startswith(b'R '):
                 definition = detail.split()
                 image_validation.require(len(definition) == 8 and path not in edits,
@@ -121,8 +124,9 @@ def write_pseudo(source, target, replacements):
         output.write(additions + marker)
 
 
-def qualification_candidate(system, pseudo, destination, info, source, capacity, sequence, number):
-    suffix = f'.qa{number}'
+def qualification_candidate(system, pseudo, destination, info, source, capacity, sequence, number,
+                            *, fail_boot=False):
+    suffix = '.qa-fail' if fail_boot else f'.qa{number}'
     version = info['version'][:96 - len(suffix)] + suffix
     version_data = version.encode('ascii') + b'\n'
     image_validation.require(VERSION.fullmatch(version_data), 'Invalid qualification version')
@@ -131,7 +135,8 @@ def qualification_candidate(system, pseudo, destination, info, source, capacity,
     release, count = re.subn(rb'^OS_VERSION="[^"\n]*"$',
                              b'OS_VERSION="' + version_data.rstrip() + b'"', release, flags=re.MULTILINE)
     image_validation.require(count == 1, 'Factory os-release version must be set exactly once')
-    marker = json.dumps({'status': 'TEST_ONLY', 'sequence': sequence, 'source': source},
+    trial = 'health-check-failure' if fail_boot else 'healthy'
+    marker = json.dumps({'status': 'TEST_ONLY', 'sequence': sequence, 'source': source, 'trial': trial},
                         sort_keys=True, separators=(',', ':')).encode() + b'\n'
     replacements = dict(zip(REPLACED, (version_data, seq_data, release)))
     replacements[MARKER] = marker
@@ -140,11 +145,15 @@ def qualification_candidate(system, pseudo, destination, info, source, capacity,
     artifact = destination / f'{version}-{sequence}.squashfs'
     with tempfile.TemporaryDirectory(prefix='gaoos-candidate-', dir=pseudo.parent) as directory:
         edited = Path(directory) / 'candidate.pseudo'
-        write_pseudo(pseudo, edited, replacements)
+        write_pseudo(pseudo, edited, replacements, fail_boot)
         # Keep the codec and block geometry. Qualification builds prioritize
         # repeatable local turnaround and verify the exact physical capacity.
         compression_level = {'gzip': '6', 'zstd': '9'}.get(compressor)
         options = ['-Xcompression-level', compression_level] if compression_level else []
+        if fail_boot:
+            # Mask a service the unchanged boot confirmation script requires.
+            # This lives in the trial rootfs, so fallback keeps its original unit.
+            options += ['-p', FAIL_BOOT_UNIT.decode() + ' s 777 0 0 /dev/null']
         run('mksquashfs', '-', artifact, '-pf', edited, '-noappend', '-no-progress', '-quiet',
             '-processors', str(min(os.cpu_count() or 2, 8)), '-comp', compressor, '-b', block, *options)
     size = artifact.stat().st_size
@@ -152,12 +161,17 @@ def qualification_candidate(system, pseudo, destination, info, source, capacity,
     for path, value in replacements.items():
         image_validation.require(run('unsquashfs', '-cat', artifact, path.decode()) == value,
                                  f'Qualification contents differ at {path.decode()}')
+    if fail_boot:
+        mask = run('unsquashfs', '-lln', artifact, FAIL_BOOT_UNIT.decode())
+        image_validation.require(mask.endswith(b'/' + FAIL_BOOT_UNIT + b' -> /dev/null\n'),
+                                 'Failed-boot candidate does not contain the expected autostart mask')
 
     qualified = dict(info, version=version, sequence=sequence, size_bytes=size, sha256=image_validation.sha256(artifact))
     report = {
         'status': QUALIFICATION_STATUS,
         'classification': 'TEST_ONLY',
         'hardware': 'HARDWARE_BOOT_UNVERIFIED',
+        'trial': trial,
         'source': source,
         'artifact': artifact.name,
         'ota': qualified,
@@ -172,6 +186,8 @@ def main():
     parser.add_argument('--report', type=Path, required=True, help='Validation with --ota-commit and --ota-sequence')
     parser.add_argument('--output', type=Path, required=True, help='New directory for test-only artifacts')
     parser.add_argument('--first-sequence', type=int, help='First trial sequence, defaults to factory sequence plus one')
+    parser.add_argument('--include-failed-boot', action='store_true',
+                        help='Also create an isolated test-only trial that will fail boot confirmation')
     args = parser.parse_args()
     output = args.output.resolve()
     try:
@@ -182,13 +198,18 @@ def main():
             system, info, source, capacity = validate_baseline(args.image, report, work)
             initial = info['sequence']
             first = args.first_sequence if args.first_sequence is not None else initial + 1
-            image_validation.require(0 <= initial < first < SAFE_INTEGER, 'Trial sequences must follow the factory sequence')
+            last = first + (2 if args.include_failed_boot else 1)
+            image_validation.require(0 <= initial < first and last <= SAFE_INTEGER,
+                                     'Trial sequences must follow the factory sequence')
             pseudo = work / 'factory.pseudo'
             run('unsquashfs', '-no-progress', '-processors', '2', '-pf', pseudo, system)
             bundle = work / 'bundle'
             bundle.mkdir()
             for number, sequence in enumerate((first, first + 1), start=1):
                 qualification_candidate(system, pseudo, bundle, info, source, capacity, sequence, number)
+            if args.include_failed_boot:
+                qualification_candidate(system, pseudo, bundle, info, source, capacity, last, 3,
+                                        fail_boot=True)
             bundle.rename(output)
     except (OSError, ValueError, KeyError, TypeError, EOFError, subprocess.SubprocessError) as exc:
         detail = exc.stderr.decode(errors='replace').strip() if isinstance(exc, subprocess.CalledProcessError) else str(exc)

@@ -171,7 +171,7 @@ candidate manifest. Record matching hashes before attempting the physical
 upgrade. A change to these shared components requires an independently
 qualified full image to establish a new boot baseline.
 
-### Derive a same-boot test pair
+### Derive same-boot qualification candidates
 
 Use a complete current factory image from a clean source checkout. For a
 fresh local build use `GAOOS_OTA_SEQUENCE=0`. Run the full image validator
@@ -184,20 +184,26 @@ signed OTA client and event reporter.
 python3 scripts/gaoos-qualify-ota.py \
   --image target/GaoOS-RK3566.aarch64-DATE-Generic.img.gz \
   --report /tmp/rgb30-validation/image.json \
+  --include-failed-boot \
   --output /tmp/rgb30-ota-qualification
 python3 scripts/test-gaoos-qualify-ota.py
 ```
 
 The helper binds its input to the validated factory hash and rechecks the GPT,
-slot A, kernel, and DTB. It then derives two full SquashFS candidates from the
-factory slot. It updates the version and release sequence, adds a test marker,
-and retains the existing rootfs programs and kernel module bytes. Leave enough
+slot A, kernel, and DTB. It derives two healthy SquashFS candidates and, with
+the flag shown above, one failed-boot candidate. Each receives a distinct
+version, sequence and test marker. The rootfs programs and kernel modules keep
+their original bytes. Leave enough
 temporary space for the decompressed disk and SquashFS data. Use SquashFS tools
 with pseudo-file reconstruction support. [SquashFS pseudo-file format](https://github.com/plougher/squashfs-tools/blob/master/Documentation/4.7.5/USAGE-UNSQUASHFS.md#7-unsquashfs-pseudo-file-output)
 
 Reports for the derived payloads carry `TEST_ONLY` and the original image,
-rootfs, and source commit hashes. The GitHub signing job accepts complete build
-validation reports. For qualification, provision an isolated OTA server,
+rootfs, and source commit hashes. The optional `.qa-fail` image masks
+`rocknix-autostart.service` only in the trial root filesystem. The unchanged
+boot confirmation service expects autostart to be active, so the trial fails
+confirmation while the confirmed peer retains its original services. The GitHub
+signing job accepts complete build validation reports. For qualification,
+provision an isolated OTA server,
 bucket, test device and signing key. Use `--allow-qualification` on
 `.github/scripts/sign-ota-release.py` with `--channel nightly` and on
 `.github/scripts/register-ota-release.sh` with that deployment's credentials.
@@ -226,23 +232,26 @@ Record image SHA256, source commit, card/device identity, logs and result for:
 4. Reboot manually into B. Confirm that it reaches the frontend and becomes good
    after the health checks. Verify that the server receives the deployment and
    boot confirmation for the device and target sequence.
-5. Run a separate test on disposable storage with a missing or corrupt pending B
-   root. Capture three failed attempts and recovery to working A. Record the
-   final bad status for B and rollback event in the server. Preserve
-   `/storage/init.log`, the boot journal, and the test save.
-6. Apply a known-good B update again and test explicit local rollback to A.
-   Cold boot and verify the health state and original saves and configuration.
-7. Revoke a test release and verify that new discovery stops offering it.
+5. Test explicit local rollback while both slots are confirmed good. Cold boot
+   and verify the health state and original saves and configuration.
+6. Revoke a test release and verify that new discovery stops offering it.
    Separately exercise the signed recovery path from an explicitly authorized
    current sequence to a previously promoted boot-compatible recovery target.
+7. With a confirmed source slot, stage the signed `.qa-fail` image on the
+   disposable card. Pause that offer after staging, then reboot explicitly.
+   Capture three failed confirmations and the next boot into the confirmed
+   source. Record the bad status and persisted retry count for the trial slot,
+   the server's rollback event for the same attempt, and the unchanged test
+   save. Capture serial logs during the trial and preserve `/storage/init.log`
+   and the confirmation journal where available. Revoke the test sequence after
+   collecting evidence.
 8. Qualify reset and power-loss boundaries, FAT state persistence, kernel hangs
    and hardware watchdog behavior separately. Keep a verified bootable image
    and disposable storage available before running fault injection.
 
-A host-only report must retain `HARDWARE_BOOT_UNVERIFIED`. Publish at most a
-clearly labeled prerelease with artifacts, checksums, source commit and report.
-Never infer physical success from gzip/fsck, compiled matcher tests, QEMU user
-mode, or a green build.
+A host-only report retains `HARDWARE_BOOT_UNVERIFIED`. Keep these artifacts,
+checksums, source commit, and reports in Actions or draft releases. Firmware
+publication requires the completed physical checklist.
 
 ## Current validation record
 

@@ -23,11 +23,14 @@ class Qualification(unittest.TestCase):
         self.work = Path(directory.name)
         root = self.work / 'root'
         (root / 'etc').mkdir(parents=True)
+        (root / 'etc/systemd/system').mkdir(parents=True)
         (root / 'usr/bin').mkdir(parents=True)
+        (root / 'usr/lib/systemd/system').mkdir(parents=True)
         (root / 'etc/gaoos-version').write_bytes(b'20261120\n')
         (root / 'etc/gaoos-ota-sequence').write_bytes(b'0\n')
         (root / 'etc/os-release').write_bytes(b'OS_NAME="GaoOS"\nOS_VERSION="20261120"\nBUILD_ID="' + b'a' * 40 + b'"\n')
         (root / 'usr/bin/tool').write_bytes(bytes(range(256)) * 200)
+        (root / 'usr/lib/systemd/system/rocknix-autostart.service').write_text('[Service]\nType=oneshot\n')
         self.system = self.work / 'base.squashfs'
         self.pseudo = self.work / 'base.pseudo'
         qualify.run('mksquashfs', root, self.system, '-noappend', '-quiet', '-processors', '1',
@@ -43,9 +46,9 @@ class Qualification(unittest.TestCase):
         }
         self.source = {'image_sha256': 'd' * 64, 'system_sha256': self.info['sha256'], 'git_sha': self.info['git_sha']}
 
-    def candidate(self, sequence, number, size=1536 * 1024 * 1024):
+    def candidate(self, sequence, number, size=1536 * 1024 * 1024, *, fail_boot=False):
         return qualify.qualification_candidate(self.system, self.pseudo, self.work, self.info, self.source,
-                                               size, sequence, number)
+                                               size, sequence, number, fail_boot=fail_boot)
 
     def test_real_repack_changes_only_identity_files_and_keeps_exact_boot_identity(self):
         candidates = [self.candidate(sequence, number) for sequence, number in [(3, 1), (4, 2)]]
@@ -83,8 +86,28 @@ class Qualification(unittest.TestCase):
             self.candidate(3, 1, size=96)
         self.assertEqual(list(self.work.glob('*.json')), [])
 
+    def test_failed_boot_masks_required_unit_in_the_trial_slot_only(self):
+        healthy = self.work / self.candidate(3, 1)['artifact']
+        failed = self.candidate(5, 3, fail_boot=True)
+        failure = self.work / failed['artifact']
+        self.assertEqual(failed['ota']['version'], '20261120.qa-fail')
+        self.assertEqual(failed['trial'], 'health-check-failure')
+        self.assertEqual(failed['classification'], 'TEST_ONLY')
+        marker = json.loads(qualify.run('unsquashfs', '-cat', failure, 'etc/gaoos-ota-qualification'))
+        self.assertEqual(marker['trial'], failed['trial'])
+        for field in ('kernel_sha256', 'dtb_sha256'):
+            self.assertEqual(failed['ota'][field], self.info[field])
+        target = qualify.FAIL_BOOT_UNIT.decode()
+        self.assertIn(b'/' + qualify.FAIL_BOOT_UNIT + b' -> /dev/null',
+                      qualify.run('unsquashfs', '-lln', failure, target))
+        healthy_files = qualify.run('unsquashfs', '-lln', healthy)
+        self.assertNotIn(b'/' + qualify.FAIL_BOOT_UNIT, healthy_files)
+        service = 'usr/lib/systemd/system/rocknix-autostart.service'
+        self.assertEqual(qualify.run('unsquashfs', '-cat', failure, service),
+                         qualify.run('unsquashfs', '-cat', healthy, service))
+
     def test_signer_refuses_qualification_without_explicit_test_mode(self):
-        candidate = self.candidate(3, 1)
+        candidate = self.candidate(3, 3, fail_boot=True)
         artifact = self.work / candidate['artifact']
         cmd = ['python3', SCRIPT.parents[1] / '.github/scripts/sign-ota-release.py',
                '--report', artifact.with_suffix('.json'), '--artifact', artifact, '--commit',
