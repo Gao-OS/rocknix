@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Release regressions with disposable payloads and inert command stubs."""
+import base64
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -67,16 +69,58 @@ class ReleasePipeline(unittest.TestCase):
         self.assertIn("if: github.event_name != 'pull_request'", login)
         self.assertIn("push: ${{ github.event_name != 'pull_request' }}", block)
 
+    def test_private_build_image_read_permission_through_reusable_workflows(self):
+        nightly = (WORKFLOWS / 'build-nightly.yml').read_text()
+        device = (WORKFLOWS / 'build-device.yml').read_text()
+        self.assert_permission(job(nightly, 'build-devices'), 'packages', 'read')
+        self.assertIn('\npermissions:\n  contents: read\n  packages: read\n', device)
+        for name in ['build-aarch64-toolchain', 'build-aarch64-emu-libretro']:
+            self.assert_permission(job(device, name), 'packages', 'read')
+        for path in WORKFLOWS.glob('build-*.yml'):
+            content = path.read_text()
+            if not ('docker run' in content and '/rocknix-build:latest' in content):
+                continue
+            with self.subTest(workflow=path.name):
+                login = content.index('uses: docker/login-action@v4')
+                self.assertLess(login, content.index('docker run'))
+                self.assertIn("if: github.event_name != 'pull_request'", content[:login])
+
+    def test_signed_ota_requires_validated_same_run_artifacts_and_protected_signing(self):
+        source = (WORKFLOWS / 'build-nightly.yml').read_text()
+        block = job(source, 'register-ota')
+        image = (WORKFLOWS / 'build-aarch64-image.yml').read_text()
+        self.assertIn("github.event_name == 'workflow_dispatch'", block)
+        self.assertIn("github.repository == 'Gao-OS/rocknix'", block)
+        self.assertIn("github.ref == 'refs/heads/gaoos'", block)
+        self.assertIn("- validate-only", source)
+        self.assertNotIn("validate-only", block)
+        self.assertIn("OTA_CHANNEL:", job(source, "build-devices"))
+        self.assertIn('environment: ota-signing', block)
+        self.assertNotIn('GAOOS_OTA_SIGNING_KEY', image)
+        self.assertIn('gaoos-validate-image.py', image)
+        self.assertIn('GaoOS-ota-RGB30-validation', image)
+        self.assertIn('GaoOS-ota-RGB30-validation', block)
+        self.assertLess(block.index('sign-ota-release.py'), block.index('register-ota-release.sh'))
+        self.assertNotIn('contents: write', block)
+        for name in ['release-nightly', 'release-official']:
+            self.assertIn("inputs.ota_channel == 'disabled'", job(source, name))
+
     def test_stable_release_remains_draft_without_hardware_acceptance(self):
         source = (WORKFLOWS / 'build-nightly.yml').read_text()
         block = job(source, 'release-official')
         self.assertRegex(block, r'(?m)^\s+draft: true$')
 
-    def test_nightly_prerelease_explicitly_marks_hardware_unverified(self):
+    def test_nightly_stays_draft_without_hardware_acceptance(self):
         source = (WORKFLOWS / 'build-nightly.yml').read_text()
         block = job(source, 'release-nightly')
         release = block[block.index('uses: ncipollo/release-action@v1'):]
         self.assertRegex(release, r'(?m)^\s+prerelease: true$')
+        self.assertRegex(release, r'(?m)^\s+draft: true$')
+        self.assertIn("commit: ${{ github.sha }}", release)
+        self.assertIn("allowUpdates: false", release)
+        self.assertIn("skipIfReleaseExists: true", release)
+        self.assertNotIn("git tag -f", block)
+        self.assertNotIn("git push", block)
         body = release[release.index('body:'):release.index('token:')]
         self.assertIn('HARDWARE_BOOT_UNVERIFIED', body)
 
@@ -220,6 +264,130 @@ esac
             self.assertIn('**Specific handhelds**', result.stdout)
             self.assertNotIn('GaoOS-RK3566.aarch64-20261010', result.stdout)
             self.assertNotIn('GaoOS-RK3326.aarch64-', result.stdout)
+
+
+class SignedOTAPipeline(unittest.TestCase):
+    def setUp(self):
+        if not shutil.which('openssl') or not shutil.which('mksquashfs'):
+            self.skipTest('OpenSSL and mksquashfs are required')
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        self.work = Path(workspace.name)
+        source = self.work / 'source'
+        source.mkdir()
+        (source / 'gaoos-version').write_text('20261120\n')
+        self.artifact = self.work / 'system.squashfs'
+        subprocess.run(['mksquashfs', source, self.artifact, '-noappend', '-processors', '1', '-quiet'],
+                       check=True, capture_output=True)
+        self.key = subprocess.check_output(['openssl', 'genpkey', '-algorithm', 'Ed25519'], text=True)
+        self.report = self.work / 'report.json'
+        self.output = self.work / 'signed-ota.json'
+        self.ota = {
+            'board': 'powkiddy,rgb30', 'arch': 'aarch64', 'boot_layout': 'gaoos-rk3566-ab-v1',
+            'sequence': 10, 'version': '20261120', 'git_sha': 'a' * 40, 'kernel_sha256': 'b' * 64,
+            'dtb_sha256': 'c' * 64, 'sha256': hashlib.sha256(self.artifact.read_bytes()).hexdigest(),
+            'size_bytes': self.artifact.stat().st_size
+        }
+
+    def sign(self, status='PASS', extra=()):
+        self.report.write_text(json.dumps({'status': status, 'ota': self.ota}))
+        return subprocess.run([
+            'python3', ROOT / '.github/scripts/sign-ota-release.py', '--report', self.report,
+            '--artifact', self.artifact, '--output', self.output, '--commit', 'a' * 40,
+            '--channel', 'nightly', '--sequence', '10', '--issued-at', '1700000000',
+            '--expires-at', '1700086400', *extra
+        ], env={**os.environ, 'GAOOS_OTA_SIGNING_KEY': self.key}, capture_output=True, text=True)
+
+    def test_signed_bytes_match_report_and_verify_as_ed25519(self):
+        result = self.sign(extra=('--rollback-from', '12,11'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = self.output.read_bytes()
+        envelope = json.loads(first)
+        manifest = base64.urlsafe_b64decode(envelope['manifest'] + '=' * (-len(envelope['manifest']) % 4))
+        signature = base64.urlsafe_b64decode(envelope['signature'] + '==')
+        public = subprocess.check_output(['openssl', 'pkey', '-pubout', '-outform', 'DER'],
+                                         input=self.key.encode())
+        self.assertEqual(envelope['key_id'], hashlib.sha256(public[-32:]).hexdigest())
+        self.assertEqual(json.loads(manifest), {
+            **self.ota, 'channel': 'nightly', 'schema_version': 1, 'minimum_sequence': 0,
+            'issued_at': 1700000000, 'expires_at': 1700086400, 'rollback_from': [11, 12]
+        })
+        for name, contents in [('manifest', manifest), ('signature', signature), ('public', public)]:
+            (self.work / name).write_bytes(contents)
+        subprocess.run(['openssl', 'pkeyutl', '-verify', '-rawin', '-pubin', '-keyform', 'DER',
+                        '-inkey', self.work / 'public', '-in', self.work / 'manifest',
+                        '-sigfile', self.work / 'signature'], check=True, capture_output=True)
+        result = self.sign(extra=('--rollback-from', '11,12'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.output.read_bytes(), first)
+
+    def test_signing_requires_matching_artifact_and_validated_build(self):
+        for status, extra in [
+            ('FAIL', ()), ('PASS', ('--commit', 'f' * 40)), ('PASS', ('--sequence', '11')),
+            ('PASS', ('--minimum-sequence', '10')), ('PASS', ('--rollback-from', '9')),
+            ('PASS', ('--rollback-from', '11,11')), ('PASS', ('--expires-at', '1710000000'))
+        ]:
+            with self.subTest(status=status, extra=extra):
+                self.assertNotEqual(self.sign(status, extra).returncode, 0)
+                self.assertFalse(self.output.exists())
+        contents = self.artifact.read_bytes()
+        self.artifact.write_bytes(contents[:-1] + bytes([contents[-1] ^ 1]))
+        result = self.sign()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Artifact SHA256 does not match validation', result.stderr)
+        self.assertFalse(self.output.exists())
+
+
+    def test_registration_requires_storage_verified_exact_bytes(self):
+        if not shutil.which('jq'):
+            self.skipTest('jq is required')
+        self.assertEqual(self.sign().returncode, 0)
+        binaries = self.work / 'bin'
+        binaries.mkdir()
+        log = self.work / 'publication-log'
+        head = self.work / 'head.json'
+        for name, script in {
+            'aws': '''#!/bin/bash
+printf '%s\n' "$*" >> "$COMMAND_LOG"
+if [[ "$4" == put-object ]]; then
+  exit 1
+fi
+cat "$HEAD_RESPONSE"
+''',
+            'curl': '''#!/bin/bash
+IFS= read -r authorization
+[[ "$authorization" == 'Authorization: Bearer test-publication-token' ]] || exit 1
+printf '%s\n' "$*" >> "$COMMAND_LOG"
+'''
+        }.items():
+            command = binaries / name
+            command.write_text(script)
+            command.chmod(0o700)
+        env = {
+            **os.environ, 'PATH': str(binaries) + os.pathsep + os.environ['PATH'],
+            'COMMAND_LOG': str(log), 'HEAD_RESPONSE': str(head),
+            'GAOOS_OTA_S3_ENDPOINT': 'https://s3.example', 'GAOOS_OTA_S3_BUCKET': 'artifacts',
+            'GAOOS_OTA_API_URL': 'https://ota.example', 'GAOOS_OTA_PUBLICATION_TOKEN': 'test-publication-token'
+        }
+        digest = base64.b64encode(bytes.fromhex(self.ota['sha256'])).decode('ascii')
+        script = ROOT / '.github/scripts/register-ota-release.sh'
+        for response, should_register in [
+            ({'ChecksumSHA256': digest, 'ContentLength': self.ota['size_bytes'] + 1}, False),
+            ({'ChecksumSHA256': 'invalid', 'ContentLength': self.ota['size_bytes']}, False),
+            ({'ChecksumSHA256': digest, 'ContentLength': self.ota['size_bytes'], 'ChecksumType': 'COMPOSITE'}, False),
+            ({'ChecksumSHA256': digest, 'ContentLength': self.ota['size_bytes'], 'ChecksumType': 'FULL_OBJECT'}, True)
+        ]:
+            with self.subTest(response=response):
+                log.write_text('')
+                head.write_text(json.dumps(response))
+                result = run_script(script, [self.artifact, self.report, self.output], self.work, env=env)
+                self.assertEqual(result.returncode == 0, should_register, result.stderr)
+                calls = log.read_text()
+                self.assertIn(f'--key sha256/{self.ota["sha256"]}.squashfs', calls)
+                self.assertIn('--if-none-match *', calls)
+                self.assertIn('--checksum-mode ENABLED', calls)
+                self.assertEqual('https://ota.example/api/v1/operator/releases' in calls, should_register)
+                self.assertNotIn('test-publication-token', calls + result.stdout + result.stderr)
 
 
 if __name__ == '__main__':

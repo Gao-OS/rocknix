@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Scoped boot/build regressions; external disk/build commands are stubbed."""
 from pathlib import Path
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -181,7 +182,7 @@ printf 'DEPS=%s\\n' "$PKG_DEPENDS_TARGET"
             tool.chmod(0o755)
             (td / 'build').mkdir()
             result = shell("""set -e
-DEVICE=RK3566 PKG_DIR=%s PKG_BUILD=%s/build INSTALL=%s/install TARGET_KERNEL_ARCH=arm64
+DEVICE=RK3566 PKG_DIR=%s PKG_BUILD=%s/build INSTALL=%s/install TARGET_KERNEL_ARCH=arm64 TARGET_ARCH=aarch64
 get_build_dir() { echo %s/uboot; }
 die() { echo "$*"; exit 1; }
 """ % (PKG, td, td, td)
@@ -198,6 +199,20 @@ die() { echo "$*"; exit 1; }
                 link = installed / 'usr/lib/systemd/system/multi-user.target.wants' / (name + '.service')
                 self.assertTrue(link.is_symlink())
                 self.assertTrue(link.exists())
+            helper = installed / 'usr/bin/gaoos-ota-helper'
+            self.assertTrue(helper.stat().st_mode & 0o111)
+            with helper.open('rb') as binary:
+                header = binary.read(20)
+            self.assertEqual(header[:6], b'\x7fELF\x02\x01')
+            self.assertEqual(struct.unpack_from('<H', header, 18)[0], 183)
+            self.assertEqual((installed / 'usr/lib/gaoos/gaoos-ota-client.sh').read_bytes(),
+                             (PKG / 'src/gaoos-ota-client.sh').read_bytes())
+            self.assertTrue((installed / 'usr/bin/gaoos-ota-report').stat().st_mode & 0o111)
+            units = installed / 'usr/lib/systemd/system'
+            self.assertTrue((units / 'gaoos-ota-report.service').exists())
+            timer = units / 'timers.target.wants/gaoos-ota-report.timer'
+            self.assertTrue(timer.is_symlink())
+            self.assertTrue(timer.exists())
 
     def test_boot_script_and_initial_state_are_copied_to_fat(self):
         source = (ROOT / 'scripts/mkimage').read_text()

@@ -9,6 +9,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -65,6 +66,21 @@ def region(path, offset, size, destination=None, zero=False):
             if output:
                 output.close()
     return digest.hexdigest()
+
+
+def expand_image(image, disk):
+    limit = (BOOT_START // 2048 + sum(size for _, size in LAYOUT) + 1) * MIB
+    total = 0
+    with gzip.open(image, 'rb') as source, disk.open('wb') as output:
+        for data in iter(lambda: source.read(CHUNK), b''):
+            total += len(data)
+            require(total <= limit, 'Expanded image exceeds RK3566 factory layout')
+            if data.strip(b'\0'):
+                output.write(data)
+            else:
+                output.seek(len(data), os.SEEK_CUR)
+        output.truncate(total)
+    return total
 
 
 def gpt_header(path, lba, sectors):
@@ -158,16 +174,8 @@ def inspect(args, report, work):
         require(path.is_file() and path.stat().st_size > 0, f'Missing/empty input: {path}')
     report['inputs'] = {key: dict(path=str(getattr(args, key)), sha256=sha256(getattr(args, key)))
                         for key in ('image', 'kernel', 'uboot', 'system')}
-    disk, total = work / 'disk.img', 0
-    with gzip.open(args.image, 'rb') as source, disk.open('wb') as output:
-        for data in iter(lambda: source.read(CHUNK), b''):
-            # Sparse output bounds temporary disk use without skipping gzip CRC.
-            if data.strip(b'\0'):
-                output.write(data)
-            else:
-                output.seek(len(data), os.SEEK_CUR)
-            total += len(data)
-        output.truncate(total)
+    disk = work / 'disk.img'
+    total = expand_image(args.image, disk)
     report['gzip'] = dict(status='PASS', bytes=total)
     partitions = inspect_gpt(disk)
     report['gpt'] = partitions
@@ -199,7 +207,8 @@ def inspect(args, report, work):
     require(set(metadata) == {'extra_cmdline', 'gaoos_fdt', 'gaoos_fdtdir', 'gaoos_overlays'} and
             metadata['gaoos_fdt'] == '' and metadata['gaoos_fdtdir'] == 'device_trees' and
             metadata['gaoos_overlays'] == '', 'Invalid Generic device-tree metadata')
-    unsafe = ('debugging', 'recovery', 'break=', 'systemd.debug_shell', 'gaoos.slot=', 'gaoos.dev=', 'boot=', 'disk=')
+    unsafe = ('debugging', 'recovery', 'break=', 'systemd.debug_shell', 'gaoos.slot=',
+              'gaoos.dev=', 'gaoos.fdt=', 'boot=', 'disk=')
     require(not any(token == value or token.startswith(value) for token in metadata['extra_cmdline'].split() for value in unsafe),
             'Production Generic metadata exposes debugging or overrides A/B boot arguments')
     defaults = REPO / 'packages/gaoos/gaoos-ab-boot/boot/ab_state.env.default'
@@ -225,9 +234,14 @@ def inspect(args, report, work):
     require(rgb30.is_file(), 'RGB30 DTB missing from Generic image')
     model = command(['fdtget', '-t', 's', rgb30, '/', 'model'], 'rgb30-model')
     compatible = command(['fdtget', '-t', 's', rgb30, '/', 'compatible'], 'rgb30-compatible')
-    require('rgb30' in model.lower() and 'powkiddy,rgb30' in compatible and 'rockchip,rk3566' in compatible,
+    require('rgb30' in model.lower() and {'powkiddy,rgb30', 'rockchip,rk3566'} <= set(compatible.split()),
             'Generic RGB30 DTB has wrong model/compatible')
     report['boot'] = dict(status='PASS', model=model, compatible=compatible, metadata=metadata)
+    if args.ota_sequence is not None:
+        bootargs = [line for line in script[72:72 + size].splitlines() if line.startswith(b'setenv bootargs ')]
+        require(len(bootargs) == 1 and bootargs[0].split().count(b'gaoos.fdt=${gaoos_fdt}') == 1,
+                'OTA boot script does not identify the DTB it loaded')
+        report['boot']['expected_rgb30_argument'] = 'gaoos.fdt=device_trees/rk3566-powkiddy-rgb30.dtb'
 
     size = args.system.stat().st_size
     require(96 <= size <= partitions[1]['bytes'], 'SquashFS does not fit A/B slot')
@@ -268,6 +282,63 @@ def inspect(args, report, work):
             'Invalid ext4 storage magic/label')
     command(['e2fsck', '-f', '-n', storage], 'storage-e2fsck')
     report['storage'] = 'PASS'
+    if args.ota_sequence is not None:
+        report['ota'] = verify_ota_rootfs(args, rootfs, release, rgb30, package, report)
+
+
+def verify_ota_rootfs(args, rootfs, release, rgb30, package, report):
+    sequence_file = rootfs / 'etc/gaoos-ota-sequence'
+    version_file = rootfs / 'etc/gaoos-version'
+    device_file = rootfs / 'etc/gaoos-device'
+    require(sequence_file.read_text() == f'{args.ota_sequence}\n', 'Embedded OTA sequence mismatch')
+    require(device_file.read_text() == 'RK3566\n', 'Embedded OTA device family mismatch')
+    version = release.get('OS_VERSION', '')
+    require(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,95}', version) and
+            version_file.read_text() == version + '\n', 'Embedded OTA version mismatch')
+    require(release.get('BUILD_ID') == args.ota_commit, 'Embedded OTA source commit mismatch')
+
+    boot_releases = set(re.findall(rb'Linux version ([0-9][A-Za-z0-9._+-]{0,95}) \(', args.kernel.read_bytes()))
+    modules = rootfs / 'usr/lib/kernel-overlays/base/lib/modules'
+    module_releases = {path.name.encode() for path in modules.iterdir() if path.is_dir() and
+                       (path / 'modules.dep').is_file()}
+    require(len(boot_releases) == 1 and boot_releases == module_releases,
+            'Rootfs module release differs from the embedded boot kernel')
+    report['kernel_release'] = boot_releases.pop().decode('ascii')
+
+    for destination, source in (
+            ('usr/lib/gaoos/gaoos-ota-client.sh', 'gaoos-ota-client.sh'),
+            ('usr/bin/gaoos-ota-report', 'gaoos-ota-report')):
+        installed = rootfs / destination
+        require(not installed.is_symlink() and installed.read_bytes() == (package / 'src' / source).read_bytes(),
+                f'Rootfs {destination} differs from current package source')
+        if destination.startswith('usr/bin/'):
+            require(installed.stat().st_mode & 0o111, f'Rootfs {destination} is not executable')
+
+    helper = rootfs / 'usr/bin/gaoos-ota-helper'
+    header = read_at(helper, 0, 20)
+    require(not helper.is_symlink() and helper.stat().st_mode & 0o111 and
+            header[:6] == b'\x7fELF\x02\x01' and struct.unpack_from('<H', header, 18)[0] == 183,
+            'Rootfs OTA helper is not an executable AArch64 ELF')
+    require((rootfs / 'usr/bin/unsquashfs').is_file(), 'Rootfs unsquashfs missing')
+    ssl = rootfs / 'etc/ssl'
+    trust_bundle = ssl / 'cacert.pem.system'
+    trust_link = ssl / 'certs/ca-certificates.crt'
+    require(trust_bundle.is_file() and trust_link.is_symlink() and
+            os.readlink(trust_link) == '/etc/ssl/cacert.pem',
+            'Rootfs is missing the platform TLS trust bundle')
+
+    units = rootfs / 'usr/lib/systemd/system'
+    for unit in ('gaoos-ota-report.service', 'gaoos-ota-report.timer'):
+        require((units / unit).read_bytes() == (package / 'system.d' / unit).read_bytes(),
+                f'Rootfs {unit} differs from current package source')
+    enabled = units / 'timers.target.wants/gaoos-ota-report.timer'
+    require(enabled.is_symlink() and os.readlink(enabled) == '../gaoos-ota-report.timer',
+            'OTA event reporter timer is not enabled')
+
+    return dict(board='powkiddy,rgb30', arch='aarch64', boot_layout='gaoos-rk3566-ab-v1',
+                sequence=args.ota_sequence, version=version, git_sha=args.ota_commit,
+                kernel_sha256=report['inputs']['kernel']['sha256'], dtb_sha256=sha256(rgb30),
+                sha256=report['inputs']['system']['sha256'], size_bytes=args.system.stat().st_size)
 
 
 def main():
@@ -276,7 +347,13 @@ def main():
         parser.add_argument('--' + name, required=True, type=Path)
     parser.add_argument('--init', type=Path, help='Expected staged init for embedded byte comparison')
     parser.add_argument('--busybox', type=Path, help='Expected staged BusyBox for embedded byte comparison')
+    parser.add_argument('--ota-sequence', type=int)
+    parser.add_argument('--ota-commit')
     args = parser.parse_args()
+    if args.ota_sequence is not None or args.ota_commit is not None:
+        if not (args.ota_sequence is not None and 0 <= args.ota_sequence <= 9007199254740991 and
+                re.fullmatch(r'[0-9a-f]{40}', args.ota_commit or '')):
+            parser.error('OTA validation requires a nonnegative safe sequence and a full source commit')
     args.report = args.report.resolve()
     args.report.parent.mkdir(parents=True, exist_ok=True)
     report = dict(status='FAIL', hardware='HARDWARE_BOOT_UNVERIFIED')

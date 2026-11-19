@@ -2,15 +2,15 @@
 
 ---
 
-GaoOS is an immutable Linux distribution for handheld gaming devices, forked from [ROCKNIX](https://github.com/ROCKNIX/distribution). GaoOS adds an **A/B dual-slot boot system** for atomic, rollback-safe OTA updates — your device will never brick from a bad update.
+GaoOS is an immutable Linux distribution for handheld gaming devices, forked from ROCKNIX. Its **A/B boot system** stages root filesystem updates in the inactive slot. Both slots share the bootloader, kernel with embedded initramfs, and device tree. [ROCKNIX](https://github.com/ROCKNIX/distribution)
 
 ## What's Different from ROCKNIX
 
-- **A/B boot**: Two system slots. Updates write to the inactive slot; your running system is never modified.
-- **Auto-rollback**: If a new version fails to boot 3 times, the device automatically reverts to the last working version.
-- **Hardware watchdog**: If boot hangs, the watchdog timer triggers a reboot into the recovery slot.
-- **OTA updates**: Check, download, and apply updates from the command line or EmulationStation menu.
-- **Delta updates**: Infrastructure for bsdiff-based delta patches to reduce download sizes (when available).
+- **A/B boot** writes a replacement root filesystem to the inactive slot and verifies the partition before selecting it.
+- **Automatic rollback** selects the other eligible slot after three unconfirmed boot attempts.
+- **Hardware watchdog** can reset a stalled device. Physical RGB30 boot and rollback remain unverified.
+- **OTA updates** for provisioned Powkiddy RGB30 devices use signed metadata from the self-hosted GaoOS OTA server.
+- **Local recovery** supports applying a trusted SquashFS file or a compatible bsdiff patch from disk.
 
 ## Features
 
@@ -51,6 +51,11 @@ Or use [Balena Etcher](https://www.balena.io/etcher/) for a graphical tool.
 
 ## OTA Updates
 
+The initial self-hosted OTA target is the Powkiddy RGB30 on an RK3566 Generic
+AArch64 build. Configure the OTA origin in `/storage/.config/gaoos-ab.conf` and
+install the device token and trusted public-key set issued by the operator.
+The server controls the update channel. For a private TLS authority, use the existing Rocknix CA file at `/storage/.config/cacert.pem`. [GaoOS OTA](https://github.com/Gao-OS/GaoOS-OTA)
+
 ```bash
 gaoos-update check        # check for new version
 gaoos-update canary       # download, verify, and stage to inactive slot
@@ -59,7 +64,14 @@ gaoos-update status       # verify A/B slot status
 gaoos-update rollback     # revert to previous version if needed
 ```
 
-Updates are also accessible from the EmulationStation System Settings menu.
+The EmulationStation System Settings menu exposes the same update operations.
+A successful staging operation leaves reboot under your control. For local
+recovery, obtain and verify a trusted compatible file before running
+`gaoos-update apply /path/to/system.squashfs`.
+
+The RGB30 qualification checklist explains the physical cold-boot, successful
+slot-switch, and failed-update recovery evidence required for release.
+[RGB30 boot validation](docs/testing/rgb30-boot-validation.md)
 
 ## Building from Source
 

@@ -20,6 +20,10 @@ on:
         description: "build official version"
         type: string
         required: true
+      OTA_CHANNEL:
+        description: "Validate an RGB30 OTA candidate when set"
+        type: string
+        default: ''
 
 jobs:
   build-aarch64-image:
@@ -42,7 +46,16 @@ jobs:
       SCREENSCRAPER_DEV_LOGIN: ${{ secrets.SCREENSCRAPER_DEV_LOGIN }}
       NIGHTLY: ${{ inputs.NIGHTLY }}
       OFFICIAL: ${{ inputs.OFFICIAL }}
+      GAOOS_OTA_SEQUENCE: ${{ inputs.DEVICE == 'RK3566' && inputs.OTA_CHANNEL != '' && github.run_number || '' }}
     steps:
+      - name: Authenticate build image pulls
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
       - name: Maximize build space
         uses: justinthelaw/maximize-github-runner-space@v0.9.0
         with:
@@ -122,6 +135,34 @@ jobs:
           path: |
             output.log
             ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/.threads/logs/
+
+      - name: Validate generated RGB30 factory image and OTA payload
+        if: inputs.DEVICE == 'RK3566' && inputs.OTA_CHANNEL != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dosfstools mtools device-tree-compiler e2fsprogs squashfs-tools lzop
+          shopt -s nullglob
+          systems=(target/GaoOS-RK3566.aarch64-*.squashfs)
+          build=build.GaoOS-RK3566.aarch64
+          [[ ${#systems[@]} == 1 ]] || { echo "Expected exactly one RK3566 SquashFS"; exit 1; }
+          kernels=("$build"/install_pkg/linux-*/.image/Image)
+          [[ ${#kernels[@]} == 1 ]] || { echo "Expected exactly one staged RK3566 kernel"; exit 1; }
+          base=${systems[0]%.squashfs}
+          python3 scripts/gaoos-validate-image.py \
+            --image "$base-Generic.img.gz" --kernel "${kernels[0]}" \
+            --uboot "$build/image/system/usr/share/bootloader/Generic_uboot.bin" \
+            --system "${systems[0]}" --init "$build/initramfs/init" --busybox "$build/initramfs/usr/bin/busybox" \
+            --ota-commit "$GITHUB_SHA" --ota-sequence "$GAOOS_OTA_SEQUENCE" \
+            --report ota-validation/report.json
+
+      - name: Archive RGB30 validation evidence
+        if: always() && inputs.DEVICE == 'RK3566' && inputs.OTA_CHANNEL != '' && hashFiles('ota-validation/report.json') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: GaoOS-ota-RGB30-validation
+          path: ota-validation
+          overwrite: true
+          if-no-files-found: error
 
       - name: Get date
         run: echo "DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV

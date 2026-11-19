@@ -211,7 +211,7 @@ else
 fi
 
 # ── Construct boot arguments ──────────────────────────────────
-setenv bootargs "boot=LABEL=${bootlabel} disk=LABEL=${storagelabel} gaoos.slot=${boot_slot} gaoos.dev=${gaoos_dev} ${extra_cmdline}"
+setenv bootargs "boot=LABEL=${bootlabel} disk=LABEL=${storagelabel} gaoos.slot=${boot_slot} gaoos.dev=${gaoos_dev} gaoos.fdt=${gaoos_fdt} ${extra_cmdline}"
 
 # ── Boot ──────────────────────────────────────────────────────
 booti ${kernel_addr_r} - ${fdt_addr_r}

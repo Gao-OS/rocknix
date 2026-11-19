@@ -133,7 +133,78 @@ Validate changed workflows with `actionlint` and the package release regressions
 After pushing, inspect the run's actual jobs/conclusion. Workflow parsing success
 does not prove hosted build completion; quota, runner, registry or infrastructure
 failures must retain their actual status. Stable publication remains a separate
-physical-hardware gate; the official workflow creates a draft.
+physical-hardware gate. The legacy nightly and official workflows create drafts.
+
+### Signed OTA candidates
+
+Run the **Build** workflow from `Gao-OS/rocknix@gaoos` with **RK3566** selected.
+Choose `ota_channel: validate-only` to produce a qualified image, raw SquashFS,
+and validation report for physical testing. This mode requires no signing
+environment and leaves the candidate with the workflow artifacts. Choose
+`nightly`, `beta`, or `stable` to also sign and register it. The build uses the
+workflow run number as the immutable firmware sequence. The image validator
+compares the whole factory image and raw SquashFS from the same build, checks
+the rootfs sequence, source commit, and loaded kernel module release, and
+records the exact kernel and RGB30 DTB hashes. Its report archive retains the validation commands and
+`HARDWARE_BOOT_UNVERIFIED` status.
+
+Configure the GitHub `ota-signing` environment for the `gaoos` branch and
+required reviewers. Supply these environment settings before registration.
+
+| Setting | Purpose |
+| --- | --- |
+| Secret `GAOOS_OTA_SIGNING_KEY` | Ed25519 PKCS#8 PEM held by the signing step |
+| Secret `GAOOS_OTA_PUBLICATION_TOKEN` | OTA registry ingestion credential |
+| Secrets `GAOOS_OTA_S3_ACCESS_KEY_ID` and `GAOOS_OTA_S3_SECRET_ACCESS_KEY` | Restricted S3 writer and checksum reader |
+| Variables `GAOOS_OTA_S3_ENDPOINT`, `GAOOS_OTA_S3_BUCKET`, and `GAOOS_OTA_S3_REGION` | S3 API origin, immutable bucket, and signing region |
+| Variable `GAOOS_OTA_API_URL` | HTTPS control-plane origin |
+
+The signing job runs after the verified build and archives the signed envelope.
+Storage must support conditional single-object creation and checksum-enabled
+HEAD requests. The job verifies the stored checksum and length before
+registering the candidate. The operator controls staging and promotion after
+acceptance.
+
+Two builds are compatible for a rootfs-only upgrade when the installed boot
+layout, embedded initramfs and kernel bytes, and RGB30 DTB bytes match the
+candidate manifest. Record matching hashes before attempting the physical
+upgrade. A change to these shared components requires an independently
+qualified full image to establish a new boot baseline.
+
+### Derive a same-boot test pair
+
+Use a complete current factory image from a clean source checkout. For a
+fresh local build use `GAOOS_OTA_SEQUENCE=0`. Run the full image validator
+above with `--ota-sequence 0 --ota-commit "$(git rev-parse HEAD)"` and keep
+its report. For an existing positive-sequence build use the embedded sequence
+and the report from that build. The factory image must already contain the
+signed OTA client and event reporter.
+
+```bash
+python3 scripts/gaoos-qualify-ota.py \
+  --image target/GaoOS-RK3566.aarch64-DATE-Generic.img.gz \
+  --report /tmp/rgb30-validation/image.json \
+  --output /tmp/rgb30-ota-qualification
+python3 scripts/test-gaoos-qualify-ota.py
+```
+
+The helper binds its input to the validated factory hash and rechecks the GPT,
+slot A, kernel, and DTB. It then derives two full SquashFS candidates from the
+factory slot. It updates the version and release sequence, adds a test marker,
+and retains the existing rootfs programs and kernel module bytes. Leave enough
+temporary space for the decompressed disk and SquashFS data. Use SquashFS tools
+with pseudo-file reconstruction support. [SquashFS pseudo-file format](https://github.com/plougher/squashfs-tools/blob/master/Documentation/4.7.5/USAGE-UNSQUASHFS.md#7-unsquashfs-pseudo-file-output)
+
+Reports for the derived payloads carry `TEST_ONLY` and the original image,
+rootfs, and source commit hashes. The GitHub signing job accepts complete build
+validation reports. For qualification, provision an isolated OTA server,
+bucket, test device and signing key. Use `--allow-qualification` on
+`.github/scripts/sign-ota-release.py` with `--channel nightly` and on
+`.github/scripts/register-ota-release.sh` with that deployment's credentials.
+Retain candidate 1's bytes as the recovery target. After confirming candidate 2
+and revoking it on the test server, sign a fresh envelope for the original
+candidate 1 with `--rollback-from` set to candidate 2's sequence. Use the
+same exact payload when registering the recovery envelope.
 
 ## Physical RGB30 acceptance
 
@@ -147,16 +218,26 @@ Record image SHA256, source commit, card/device identity, logs and result for:
    good and retry reset only after the health gate passes.
 2. Warm reboot and repeated cold boot, with local display/input and persistent
    storage working. Preserve `/storage/init.log` and confirmation journal.
-3. Apply a checksum-verified compatible OTA to B. Check that A remains intact,
-   active state changes to B pending, B boots and confirms.
-4. On the disposable test installation, inject a missing/corrupt pending B root
-   or selected-slot failure. Capture three failed attempts and subsequent
-   rollback to working A; B must remain bad, never confirmed good.
-5. Explicit rollback from B to previously working A, followed by cold boot and
-   health confirmation. Verify saves/configuration persist.
-6. Qualify reset/power-loss boundaries, FAT state persistence, kernel hangs and
-   hardware watchdog behavior separately. Avoid a test plan that leaves the only
-   valid root or shared kernel/DTB unrecoverable.
+3. Provision the RGB30 with an assigned test channel and the trusted public
+   signing keys. Record the running and offered sequences, exact boot-component
+   hashes, the `gaoos.fdt` argument in `/proc/cmdline`, and successful authenticated discovery. From EmulationStation or the
+   CLI, stage the compatible signed OTA. Verify that the running slot stays
+   mounted and unchanged, B is pending, and the device has yet to reboot.
+4. Reboot manually into B. Confirm that it reaches the frontend and becomes good
+   after the health checks. Verify that the server receives the deployment and
+   boot confirmation for the device and target sequence.
+5. Run a separate test on disposable storage with a missing or corrupt pending B
+   root. Capture three failed attempts and recovery to working A. Record the
+   final bad status for B and rollback event in the server. Preserve
+   `/storage/init.log`, the boot journal, and the test save.
+6. Apply a known-good B update again and test explicit local rollback to A.
+   Cold boot and verify the health state and original saves and configuration.
+7. Revoke a test release and verify that new discovery stops offering it.
+   Separately exercise the signed recovery path from an explicitly authorized
+   current sequence to a previously promoted boot-compatible recovery target.
+8. Qualify reset and power-loss boundaries, FAT state persistence, kernel hangs
+   and hardware watchdog behavior separately. Keep a verified bootable image
+   and disposable storage available before running fault injection.
 
 A host-only report must retain `HARDWARE_BOOT_UNVERIFIED`. Publish at most a
 clearly labeled prerelease with artifacts, checksums, source commit and report.

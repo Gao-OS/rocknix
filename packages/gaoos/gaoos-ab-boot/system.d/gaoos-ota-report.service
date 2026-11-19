@@ -1,0 +1,8 @@
+[Unit]
+Description=Send GaoOS OTA device diagnostics
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/gaoos-ota-report flush
+TimeoutStartSec=120

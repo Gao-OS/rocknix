@@ -10,9 +10,16 @@
 set -euo pipefail
 
 AB_STATE="/flash/ab_state.env"
+AB_LOCK="/run/gaoos-ab.lock"
 LOG="/var/log/gaoos-boot-confirm.log"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "${LOG}"; }
+
+report_boot() {
+  if [ -x /usr/bin/gaoos-ota-report ]; then
+    /usr/bin/gaoos-ota-report boot || true
+  fi
+}
 
 # Read current slot state
 get_running_slot() {
@@ -98,6 +105,8 @@ log "Waiting 30 seconds for system stabilization..."
 sleep 30
 
 running=$(get_running_slot)
+exec 9>>"${AB_LOCK}"
+flock 9
 read_ab_state
 
 # Check if current slot is pending (needs confirmation)
@@ -109,7 +118,9 @@ else
 fi
 
 if [ "${current_status}" = "good" ]; then
+  exec 9>&-
   log "Slot ${running} already confirmed good. Nothing to do."
+  report_boot
   exit 0
 fi
 
@@ -214,6 +225,7 @@ if [ "${health_ok}" = "true" ]; then
     retry_b="0"
   fi
   write_ab_state
+  exec 9>&-
   log "Slot ${running} confirmed good."
 
   # Stop the boot watchdog now that we're confirmed healthy (M8)
@@ -221,6 +233,7 @@ if [ "${health_ok}" = "true" ]; then
     log "Stopping boot watchdog..."
     systemctl stop gaoos-watchdog.service 2>/dev/null || true
   fi
+  report_boot
 else
   log "Health checks failed. Slot ${running} remains pending."
   log "Will retry on next boot. After ${max_retries} failures, auto-rollback triggers."

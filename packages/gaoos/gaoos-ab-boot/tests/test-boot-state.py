@@ -67,6 +67,7 @@ class BootState(unittest.TestCase):
         if slot:
             self.assertIn('BOOTARGS=', result.stdout, result.stdout + result.stderr)
             self.assertIn('gaoos.slot=' + slot, result.stdout)
+            self.assertIn('gaoos.fdt=device_trees/rk3566-powkiddy-rgb30.dtb', result.stdout)
         else:
             self.assertNotIn('BOOTARGS=', result.stdout, result.stdout + result.stderr)
         return result

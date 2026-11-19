@@ -1,0 +1,35 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+set -euo pipefail
+
+# shellcheck source=gaoos-ota-client.sh
+. /usr/lib/gaoos/gaoos-ota-client.sh
+STAGING_DIR=/storage/.update
+ota_load_config
+[ -n "${UPDATE_API_URL:-}" ] || exit 0
+ota_paths
+
+case "${1:-}" in
+  boot)
+    [ -f "${OTA_JOURNAL}" ] || exit 0
+    ota_lock || exit 0
+    ota_reconcile
+    ;;
+  flush)
+    [ -d "${OTA_DIR}" ] || exit 0
+    ota_lock || exit 0
+    ota_reconcile || true
+    # A network operation must not hold the updater mutex or delay boot.
+    exec 8>&-
+    remaining=5
+    for event in "${OTA_EVENTS}"/*.json; do
+      [ -f "${event}" ] || continue
+      if "${OTA_HELPER}" event --api "${UPDATE_API_URL}" --token-file "${UPDATE_TOKEN_FILE}" --event-file "${event}"; then
+        rm -f -- "${event}"
+      fi
+      remaining=$(( remaining - 1 ))
+      [ "${remaining}" -gt 0 ] || break
+    done
+    ;;
+  *) exit 2 ;;
+esac

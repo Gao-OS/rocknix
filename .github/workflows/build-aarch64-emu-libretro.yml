@@ -36,6 +36,14 @@ jobs:
       CCACHE_COMPRESSLEVEL: 6
       CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
     steps:
+      - name: Authenticate build image pulls
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
       - name: Maximize build space
         uses: justinthelaw/maximize-github-runner-space@v0.9.0
         with:

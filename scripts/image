@@ -182,6 +182,15 @@ fi
 echo "${DEVICE}" >${INSTALL}/etc/gaoos-device
 echo "${OS_VERSION}" >${INSTALL}/etc/gaoos-version
 
+if [ "${GAOOS_AB_BOOT}:${DEVICE}:${TARGET_ARCH}" = "yes:RK3566:aarch64" ]; then
+  sequence="${GAOOS_OTA_SEQUENCE:-0}"
+  if ! [[ "${sequence}" =~ ^(0|[1-9][0-9]{0,15})$ ]] || [ "${sequence}" -gt 9007199254740991 ]; then
+    echo "Invalid GAOOS_OTA_SEQUENCE" >&2
+    exit 1
+  fi
+  printf '%s\n' "${sequence}" >"${INSTALL}/etc/gaoos-ota-sequence"
+fi
+
 # Copy PROJECT related files to filesystem
 if [ -d "${PROJECT_DIR}/${PROJECT}/filesystem" ]; then
   cp -PR --remove-destination ${PROJECT_DIR}/${PROJECT}/filesystem/* ${INSTALL}

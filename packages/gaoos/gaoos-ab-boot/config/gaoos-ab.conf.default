@@ -1,5 +1,6 @@
-# GaoOS A/B Boot Configuration
-# Copy to /storage/.config/gaoos-ab.conf to customize.
-
-# Update manifest URL pattern. ${DEVICE} is replaced with the device identifier.
-UPDATE_MANIFEST_URL="https://github.com/Gao-OS/rocknix/releases/latest/download/manifest-\${DEVICE}.json"
+# GaoOS A/B boot configuration. Customize /storage/.config/gaoos-ab.conf.
+# Remote updates require an HTTPS control-plane origin and provisioned device
+# credentials and public signing keys. An empty origin leaves local recovery enabled.
+UPDATE_API_URL=""
+UPDATE_TOKEN_FILE="/storage/.config/gaoos-ota/device-token"
+UPDATE_TRUST_FILE="/storage/.config/gaoos-ota/trusted-keys.json"

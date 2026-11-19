@@ -17,15 +17,12 @@ set -euo pipefail
 
 # Paths
 AB_STATE="/flash/ab_state.env"
-GAOOS_CONF="/storage/.config/gaoos-ab.conf"
-GAOOS_CONF_DEFAULT="/usr/share/gaoos/gaoos-ab.conf.default"
+AB_LOCK="/run/gaoos-ab.lock"
+OTA_CLIENT="/usr/lib/gaoos/gaoos-ota-client.sh"
 DEVICE_FILE="/etc/gaoos-device"
 VERSION_FILE="/etc/gaoos-version"
 STAGING_DIR="/storage/.update"
 PROGRESS_FILE="/tmp/gaoos-update-progress"
-
-# Defaults
-MAX_RETRIES=3
 
 # ──────────────────────────────────────────────────────────────
 # Helpers
@@ -39,17 +36,6 @@ progress() {
   local pct="$1" msg="$2"
   echo "${pct} ${msg}" > "${PROGRESS_FILE}" 2>/dev/null || true
   echo "[${pct}%] ${msg}" >&2
-}
-
-load_config() {
-  # Ensure config exists
-  if [ ! -f "${GAOOS_CONF}" ]; then
-    if [ -f "${GAOOS_CONF_DEFAULT}" ]; then
-      mkdir -p "$(dirname "${GAOOS_CONF}")"
-      cp "${GAOOS_CONF_DEFAULT}" "${GAOOS_CONF}"
-    fi
-  fi
-  [ -f "${GAOOS_CONF}" ] && . "${GAOOS_CONF}"
 }
 
 get_device() {
@@ -88,8 +74,7 @@ get_running_slot() {
 }
 
 get_inactive_slot() {
-  local running
-  running=$(get_running_slot)
+  local running="$1"
   if [ "${running}" = "a" ]; then
     echo "b"
   else
@@ -101,22 +86,23 @@ get_boot_dev() {
   # Linux MMC numbering can differ from U-Boot's gaoos.dev hint. Match init:
   # select slots on the disk whose boot partition is actually mounted at /flash.
   local dev
-  dev=$(awk '$2 == "/flash" {print $1; exit}' /proc/mounts)
-  [ -n "${dev}" ] || die "Cannot identify A/B boot disk: /flash is not mounted"
+  dev=$(awk '$2 == "/flash" {count++; if ($3 == "vfat") dev=$1}
+             END {if (count != 1 || !dev) exit 1; print dev}' /proc/mounts) ||
+    die "Cannot identify A/B boot disk: expected one FAT mount at /flash"
   dev=$(readlink -f "${dev}") || die "Cannot resolve /flash boot device"
-  case "${dev}" in
-    /dev/mmcblk*p1|/dev/loop*p1|/dev/nvme*p1) dev="${dev%p1}" ;;
-    /dev/sd*1) dev="${dev%1}" ;;
-    *) die "Cannot identify A/B boot disk from ${dev}" ;;
-  esac
+  if [[ "${dev}" =~ ^/dev/((mmcblk|loop)[0-9]+|nvme[0-9]+n[0-9]+)p1$ ]]; then
+    dev="${dev%p1}"
+  elif [[ "${dev}" =~ ^/dev/sd[a-z]+1$ ]]; then
+    dev="${dev%1}"
+  else
+    die "Cannot identify A/B boot disk from ${dev}"
+  fi
   echo "${dev#/dev/}"
 }
 
 get_slot_partition() {
   # Map slot letter to partition device path
-  local slot="$1"
-  local dev
-  dev=$(get_boot_dev)
+  local slot="$1" dev="$2"
   local sep=""
   case "${dev}" in
     mmcblk*|loop*|nvme*) sep="p" ;;
@@ -126,6 +112,42 @@ get_slot_partition() {
     b) echo "/dev/${dev}${sep}3" ;;
     *) die "Invalid slot: ${slot}" ;;
   esac
+}
+
+# Match kernel device numbers to handle udev aliases and bind mounts.
+block_identity() {
+  local dev="$1" id kernel_id
+  [ -b "${dev}" ] || return 1
+  id=$(stat -Lc '%t:%T' "${dev}") || return 1
+  [[ "${id}" =~ ^([[:xdigit:]]+):([[:xdigit:]]+)$ ]] || return 1
+  id=$(printf '%d:%d' "0x${BASH_REMATCH[1]}" "0x${BASH_REMATCH[2]}") || return 1
+  read -r kernel_id < "/sys/class/block/${dev##*/}/dev" || return 1
+  [ "${id}" = "${kernel_id}" ] || return 1
+  printf '%s\n' "${id}"
+}
+
+slot_partitions() {
+  local running="$1" inactive="$2" dev source_part target_part source_id target_id
+  dev=$(get_boot_dev) || return 1
+  source_part=$(get_slot_partition "${running}" "${dev}") || return 1
+  target_part=$(get_slot_partition "${inactive}" "${dev}") || return 1
+  source_id=$(block_identity "${source_part}") || die "Running partition ${source_part} is unavailable"
+  target_id=$(block_identity "${target_part}") || die "Inactive partition ${target_part} is unavailable"
+  [ "${source_id}" != "${target_id}" ] || die "Slot devices refer to the same partition"
+  awk -v source="${source_id}" -v target="${target_id}" '
+    $5 == "/" {
+      roots++
+      if ($3 == source && ("," $6 ",") ~ /,ro,/ && / - squashfs /) correct_root=1
+    }
+    $3 == target {target_mounted=1}
+    END {exit !(roots == 1 && correct_root && !target_mounted)}
+  ' /proc/self/mountinfo || die "Expected the running SquashFS on ${source_part} and an unmounted inactive partition"
+  printf '%s %s\n' "${source_part}" "${target_part}"
+}
+
+lock_ab_state() {
+  exec 9>>"${AB_LOCK}" || die "Cannot open A/B update lock"
+  flock -n 9 || die "Another A/B state operation is in progress"
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -165,7 +187,7 @@ read_ab_state() {
 write_ab_state() {
   # Mount boot partition RW if needed
   local was_ro=0
-  if grep -q '/flash.*ro[,[:space:]]' /proc/mounts 2>/dev/null; then
+  if awk '$2 == "/flash" && ("," $4 ",") ~ /,ro,/ {ro=1} END {exit !ro}' /proc/mounts; then
     mount -o remount,rw /flash 2>/dev/null || return 1
     was_ro=1
   fi
@@ -203,10 +225,23 @@ EOF
 
 verify_checksum() {
   local image="$1" checksum_file="$2" expected actual
-  expected=$(awk 'NR == 1 {print $1}' "${checksum_file}")
+  expected=$(awk 'NR == 1 {print $1}' "${checksum_file}" | tr '[:upper:]' '[:lower:]') ||
+    die "Cannot read checksum file: ${checksum_file}"
   [[ "${expected}" =~ ^[[:xdigit:]]{64}$ ]] || die "Invalid checksum file: ${checksum_file}"
-  actual=$(sha256sum "${image}" | awk '{print $1}')
-  [ "${actual}" = "${expected,,}" ] || die "Checksum mismatch: ${image}"
+  actual=$(sha256sum "${image}" | awk '{print $1}') || die "Cannot hash image: ${image}"
+  [ "${actual}" = "${expected}" ] || die "Checksum mismatch: ${image}"
+}
+
+slot_status() {
+  local field="status_$1"
+  printf '%s\n' "${!field}"
+}
+
+load_ota_client() {
+  local module="${OTA_CLIENT}"
+  [ -f "${module}" ] || module="$(dirname "$0")/gaoos-ota-client.sh"
+  [ -f "${module}" ] || return 1
+  source "${module}" || die "Cannot load the OTA client"
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -214,11 +249,11 @@ verify_checksum() {
 # ──────────────────────────────────────────────────────────────
 
 cmd_status() {
-  read_ab_state
+  read_ab_state || die "Invalid A/B state"
   local running
-  running=$(get_running_slot)
+  running=$(get_running_slot) || die "Cannot identify running slot"
   local inactive
-  inactive=$(get_inactive_slot)
+  inactive=$(get_inactive_slot "${running}")
   local device
   device=$(get_device)
   local version
@@ -240,217 +275,45 @@ cmd_status() {
   echo "  Retries: ${retry_b}"
   echo ""
 
-  # Check for staged update
-  if ls "${STAGING_DIR}"/*.squashfs 2>/dev/null | head -1 >/dev/null 2>&1; then
-    echo "Staged update: YES (in ${STAGING_DIR})"
+  if [ "${active_slot}" = "${inactive}" ] && [ "$(slot_status "${inactive}")" = pending ]; then
+    echo "Staged update: YES (slot ${inactive})"
   else
     echo "Staged update: none"
   fi
 }
 
-cmd_check() {
-  load_config
-  local device
-  device=$(get_device)
-  local current_version
-  current_version=$(get_version)
-
-  # Build manifest URL
-  local manifest_url="${UPDATE_MANIFEST_URL:-}"
-  [ -n "${manifest_url}" ] || manifest_url='https://github.com/Gao-OS/rocknix/releases/latest/download/manifest-${DEVICE}.json'
-  manifest_url="${manifest_url//\$\{DEVICE\}/${device}}"
-  manifest_url="${manifest_url//\$DEVICE/${device}}"
-
-  log "Checking for updates at: ${manifest_url}"
-
-  local manifest
-  manifest=$(curl -sfL --connect-timeout 10 --max-time 30 "${manifest_url}" 2>/dev/null) || {
-    err "Failed to fetch update manifest"
-    echo "no"
-    return 1
-  }
-
-  # Parse JSON (minimal — no jq dependency guaranteed)
-  local remote_version
-  remote_version=$(echo "${manifest}" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-  local remote_url
-  remote_url=$(echo "${manifest}" | sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-  local remote_sha256
-  remote_sha256=$(echo "${manifest}" | sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-  local remote_size
-  remote_size=$(echo "${manifest}" | sed -n 's/.*"size_bytes"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
-  local min_version
-  min_version=$(echo "${manifest}" | sed -n 's/.*"min_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-  local changelog_url
-  changelog_url=$(echo "${manifest}" | sed -n 's/.*"changelog_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-
-  # Delta update fields (M7 — optional, used when available)
-  local delta_url
-  delta_url=$(echo "${manifest}" | sed -n 's/.*"delta_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-  local delta_from_version
-  delta_from_version=$(echo "${manifest}" | sed -n 's/.*"delta_from_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-  local delta_sha256
-  delta_sha256=$(echo "${manifest}" | sed -n 's/.*"delta_sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-
-  if [ -z "${remote_version}" ]; then
-    err "Invalid manifest: no version field"
-    echo "no"
-    return 1
-  fi
-
-  # Check min_version constraint
-  if [ -n "${min_version}" ] && [ "${current_version}" \< "${min_version}" ]; then
-    err "Running version ${current_version} is older than minimum required ${min_version}"
-    err "A fresh flash may be required. Cannot apply this update."
-    echo "no"
-    return 1
-  fi
-
-  # Compare versions
-  if [ "${remote_version}" = "${current_version}" ]; then
-    log "Already running latest version: ${current_version}"
-    echo "no"
-    return 0
-  fi
-
-  echo "${remote_version}"
-  log "Update available: ${current_version} → ${remote_version}"
-  [ -n "${changelog_url}" ] && log "Changelog: ${changelog_url}"
-
-  # Save manifest info for download/apply
-  mkdir -p "${STAGING_DIR}"
-  cat > "${STAGING_DIR}/manifest.json" <<EOF
-{"version":"${remote_version}","url":"${remote_url}","sha256":"${remote_sha256}","size_bytes":${remote_size:-0},"changelog_url":"${changelog_url}","delta_url":"${delta_url}","delta_from_version":"${delta_from_version}","delta_sha256":"${delta_sha256}"}
-EOF
-
-  # Log delta availability
-  if [ -n "${delta_url}" ] && [ "${delta_from_version}" = "${current_version}" ]; then
-    log "Delta update available (${current_version} → ${remote_version})"
-  fi
-  return 0
-}
-
-cmd_download() {
-  local image_url="$1"
-  local sha256="${2:-}"
-  local target_sha256=""
-
-  # If no URL given, try to read from saved manifest
-  if [ -z "${image_url}" ] && [ -f "${STAGING_DIR}/manifest.json" ]; then
-    # Check if delta update is available and version matches (M7)
-    local delta_url delta_from sha256_delta current_ver
-    delta_url=$(sed -n 's/.*"delta_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
-    delta_from=$(sed -n 's/.*"delta_from_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
-    sha256_delta=$(sed -n 's/.*"delta_sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
-    current_ver=$(get_version)
-
-    if [ -n "${delta_url}" ] && [ "${delta_from}" = "${current_ver}" ] && command -v bspatch >/dev/null 2>&1; then
-      log "Using delta update (${current_ver} → next)"
-      image_url="${delta_url}"
-      sha256="${sha256_delta}"
-      target_sha256=$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
-      [[ "${target_sha256}" =~ ^[[:xdigit:]]{64}$ ]] || die "Delta manifest has no valid target checksum"
-      [[ "${sha256}" =~ ^[[:xdigit:]]{64}$ ]] || die "Delta manifest has no valid patch checksum"
-    else
-      image_url=$(sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
-      sha256=$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${STAGING_DIR}/manifest.json")
-    fi
-  fi
-
-  [ -z "${image_url}" ] && die "No image URL specified. Run 'gaoos-update check' first or provide a URL."
-
-  mkdir -p "${STAGING_DIR}"
-  local filename
-  filename=$(basename "${image_url}")
-  local dest="${STAGING_DIR}/${filename}"
-
-  # Check disk space (need at least 1GB free)
-  local free_kb
-  free_kb=$(df /storage 2>/dev/null | tail -1 | awk '{print $4}')
-  if [ "${free_kb:-0}" -lt 1048576 ]; then
-    die "Insufficient disk space. Need at least 1GB free on /storage."
-  fi
-
-  log "Downloading: ${image_url}"
-  progress 0 "Starting download..."
-
-  curl -fL --connect-timeout 15 --max-time 1800 \
-    --progress-bar \
-    -o "${dest}" \
-    "${image_url}" 2>&1 | while IFS= read -r line; do
-      # Extract percentage from curl progress
-      local pct
-      pct=$(echo "${line}" | sed -n 's/.*\([0-9]\{1,3\}\)\.[0-9]%.*/\1/p' | tail -1)
-      if [ -n "${pct}" ]; then
-        progress "${pct}" "Downloading..."
-      fi
-    done
-
-  if [ ! -f "${dest}" ]; then
-    die "Download failed"
-  fi
-
-  progress 100 "Download complete"
-
-  # Verify checksum if available
-  if [ -n "${sha256}" ]; then
-    log "Verifying checksum..."
-    progress 0 "Verifying checksum..."
-    local actual
-    actual=$(sha256sum "${dest}" | awk '{print $1}')
-    if [ "${actual}" != "${sha256}" ]; then
-      rm -f "${dest}"
-      die "Checksum mismatch! Expected: ${sha256}, Got: ${actual}"
-    fi
-    log "Checksum verified OK"
-    progress 100 "Checksum verified"
-  fi
-
-  # Save sha256 for apply verification
-  if [ -n "${sha256}" ]; then
-    echo "${sha256}  ${dest}" > "${dest}.sha256"
-  fi
-  if [ -n "${target_sha256}" ]; then
-    echo "${target_sha256}" > "${dest}.target.sha256"
-  fi
-
-  echo "${dest}"
-}
-
 cmd_apply() (
-  local image="$1"
+  local image="$1" expected_sha256="${2:-}" expected_bytes="${3:-}"
+  local running inactive partitions source_part target_part running_status
+  local image_size target_capacity src_hash written_hash format used_bytes
+  local target_status target_retry
 
-  [ -z "${image}" ] && die "Usage: gaoos-update apply <image>"
+  [ -n "${image}" ] || die "Usage: gaoos-update apply <image>"
+  [[ "${image}" = /* ]] || image="./${image}"
   [ -f "${image}" ] || die "Image not found: ${image}"
-  if [ -f "${image}.sha256" ]; then
+  lock_ab_state
+  read_ab_state || die "Invalid A/B state"
+  running=$(get_running_slot) || die "Cannot identify running slot"
+  inactive=$(get_inactive_slot "${running}")
+  partitions=$(slot_partitions "${running}" "${inactive}") || exit 1
+  read -r source_part target_part <<< "${partitions}"
+  running_status=$(slot_status "${running}")
+  [ "${active_slot}" = "${running}" ] && [ "${running_status}" = good ] ||
+    die "Finish booting the selected slot and confirm it before replacing the inactive slot"
+
+  if [ -n "${expected_sha256}${expected_bytes}" ]; then
+    [[ "${expected_sha256}" =~ ^[0-9a-f]{64}$ && "${expected_bytes}" =~ ^[1-9][0-9]{0,15}$ ]] ||
+      die "Invalid signed artifact integrity fields"
+    [ "$(stat -c %s "${image}")" = "${expected_bytes}" ] || die "Signed artifact size mismatch"
+  elif [ -f "${image}.sha256" ]; then
     log "Verifying source checksum..."
     verify_checksum "${image}" "${image}.sha256"
   fi
 
-  read_ab_state
-  local inactive
-  inactive=$(get_inactive_slot)
-  local running
-  running=$(get_running_slot)
-
-  # Determine target partition
-  local target_part
-  target_part=$(get_slot_partition "${inactive}")
-
-  # Verify target partition exists
-  [ -b "${target_part}" ] || die "Target partition ${target_part} not found"
-
-  local source_part
-  source_part=$(get_slot_partition "${running}")
-
   # Check if this is a delta patch (M7) — bspatch files start with "BSDIFF40"
-  local is_delta=false
-  if head -c 8 "${image}" 2>/dev/null | grep -q "BSDIFF40"; then
-    is_delta=true
-  fi
-
-  if [ "${is_delta}" = "true" ]; then
+  if [ "$(head -c 8 "${image}" | tr -d '\000')" = "BSDIFF40" ]; then
     # Delta update path (M7)
+    [ -z "${expected_sha256}" ] || die "OTA manifests require a full SquashFS image"
     command -v bspatch >/dev/null 2>&1 || die "bspatch not found — cannot apply delta update. Use full image instead."
     [ -f "${image}.target.sha256" ] || die "Delta update requires a target image checksum"
 
@@ -458,19 +321,19 @@ cmd_apply() (
     # and its partition padding is not part of the original SquashFS payload.
     local source_bytes source_size source_capacity source_format delta_dir
     [ "$(head -c 4 "${source_part}")" = "hsqs" ] || die "Invalid source SquashFS magic"
-    source_format=$(od -An -tu2 -j28 -N4 "${source_part}" | xargs)
+    source_format=$(od -An -tu2 -j28 -N4 "${source_part}" | xargs) || die "Cannot read source SquashFS version"
     [ "${source_format}" = "4 0" ] || die "Unsupported source SquashFS version"
-    source_bytes=$(od -An -tu8 -j40 -N8 "${source_part}" | tr -d '[:space:]')
-    source_capacity=$(blockdev --getsize64 "${source_part}")
-    [[ "${source_bytes}" =~ ^[0-9]+$ ]] || die "Invalid source SquashFS size"
+    source_bytes=$(od -An -tu8 -j40 -N8 "${source_part}" | tr -d '[:space:]') || die "Cannot read source SquashFS size"
+    source_capacity=$(blockdev --getsize64 "${source_part}") || die "Cannot read running slot capacity"
+    [[ "${source_bytes}" =~ ^[1-9][0-9]{0,15}$ ]] || die "Invalid source SquashFS size"
     [ "${source_bytes}" -ge 96 ] && [ "${source_bytes}" -le "${source_capacity}" ] || die "Source SquashFS exceeds slot bounds"
     source_size=$(( (source_bytes + 4095) / 4096 * 4096 ))
     [ "${source_size}" -le "${source_capacity}" ] || die "Source SquashFS padding exceeds slot bounds"
 
-    mkdir -p "${STAGING_DIR}"
-    delta_dir=$(mktemp -d "${STAGING_DIR}/.delta-XXXXXX")
+    mkdir -p "${STAGING_DIR}" || die "Cannot create staging directory"
+    delta_dir=$(mktemp -d "${STAGING_DIR}/.delta-XXXXXX") || die "Cannot create delta workspace"
     trap 'rm -rf "${delta_dir}"' EXIT
-    head -c "${source_size}" "${source_part}" > "${delta_dir}/source.squashfs"
+    head -c "${source_size}" "${source_part}" > "${delta_dir}/source.squashfs" || die "Cannot read delta base"
     [ "$(stat -c %s "${delta_dir}/source.squashfs")" = "${source_size}" ] || die "Incomplete source SquashFS read"
 
     log "Reconstructing delta image from slot ${running}..."
@@ -481,16 +344,31 @@ cmd_apply() (
     progress 100 "Delta image verified"
   fi
 
-  # Both full and reconstructed images use the same validated write path.
+  image_size=$(stat -c %s "${image}") || die "Cannot read image size"
+  target_capacity=$(blockdev --getsize64 "${target_part}") || die "Cannot read inactive slot capacity"
+  [ "${image_size}" -ge 96 ] && [ "${image_size}" -le "${target_capacity}" ] || die "Image exceeds slot capacity or is too small"
+  [ "$(head -c 4 "${image}" | tr -d '\000')" = "hsqs" ] || die "Invalid SquashFS magic"
+  format=$(od -An -tu2 -j28 -N4 "${image}" | xargs) || die "Cannot read SquashFS version"
+  [ "${format}" = "4 0" ] || die "Unsupported SquashFS version"
+  used_bytes=$(od -An -tu8 -j40 -N8 "${image}" | tr -d '[:space:]') || die "Cannot read SquashFS size"
+  [[ "${used_bytes}" =~ ^[1-9][0-9]{0,15}$ ]] && [ "${used_bytes}" -ge 96 ] &&
+    [ "${used_bytes}" -le "${image_size}" ] || die "SquashFS data exceeds image bounds"
   if command -v unsquashfs >/dev/null 2>&1; then
     log "Validating SquashFS image..."
     unsquashfs -s "${image}" >/dev/null 2>&1 || die "Invalid SquashFS image: ${image}"
-    log "SquashFS validation passed"
   fi
-  local image_size target_capacity
-  image_size=$(stat -c %s "${image}")
-  target_capacity=$(blockdev --getsize64 "${target_part}")
-  [ "${image_size}" -gt 0 ] && [ "${image_size}" -le "${target_capacity}" ] || die "Image exceeds slot capacity"
+  src_hash=$(sha256sum "${image}" | awk '{print $1}') || die "Cannot hash image"
+  [ -z "${expected_sha256}" ] || [ "${src_hash}" = "${expected_sha256}" ] || die "Signed artifact checksum mismatch"
+
+  # From this point a failed or interrupted write can destroy the previous
+  # contents of the inactive slot. Retire any bootable copy before writing.
+  target_status="status_${inactive}"
+  target_retry="retry_${inactive}"
+  if [ "${!target_status}" = good ] || [ "${!target_status}" = pending ]; then
+    printf -v "${target_status}" '%s' bad
+    printf -v "${target_retry}" '%s' 0
+    write_ab_state || die "Cannot retire the previous inactive slot before writing"
+  fi
 
   log "Writing image to slot ${inactive} (${target_part})..."
   log "Active/running slot ${running} will NOT be modified."
@@ -502,17 +380,15 @@ cmd_apply() (
       local pct=$(( bytes * 100 / image_size ))
       progress "${pct}" "Writing to slot ${inactive}..."
     fi
-  done
-  sync
+  done || die "Write to slot ${inactive} failed"
+  sync || die "Cannot flush slot ${inactive}"
   progress 100 "Write complete"
 
   # Verify written data
   log "Verifying written data..."
   progress 0 "Verifying write..."
-  local src_hash
-  src_hash=$(sha256sum "${image}" | awk '{print $1}')
-  local written_hash
-  written_hash=$(head -c "${image_size}" "${target_part}" | sha256sum | awk '{print $1}')
+  written_hash=$(head -c "${image_size}" "${target_part}" | sha256sum | awk '{print $1}') ||
+    die "Cannot read back slot ${inactive}"
 
   if [ "${src_hash}" != "${written_hash}" ]; then
     die "Write verification failed! Slot ${inactive} may be corrupt but running slot is safe."
@@ -521,77 +397,51 @@ cmd_apply() (
   progress 100 "Verification complete"
 
   # Update A/B state
-  if [ "${inactive}" = "a" ]; then
-    status_a="pending"
-    retry_a="0"
-  else
-    status_b="pending"
-    retry_b="0"
-  fi
+  printf -v "${target_status}" '%s' pending
+  printf -v "${target_retry}" '%s' 0
   active_slot="${inactive}"
-  write_ab_state
+  write_ab_state || die "Cannot select verified slot ${inactive}"
 
   log "Slot ${inactive} marked as pending. Active slot set to ${inactive}."
   log "Reboot to boot into the new system. It will auto-confirm after health checks pass."
   log "NOTE: Reboot is NOT automatic. Run 'reboot' when ready."
 )
 
-cmd_rollback() {
-  read_ab_state
+cmd_rollback() (
+  lock_ab_state
+  read_ab_state || die "Invalid A/B state"
   local running
-  running=$(get_running_slot)
+  running=$(get_running_slot) || die "Cannot identify running slot"
   local other
-  other=$(get_inactive_slot)
-
-  # Check other slot status
-  local other_status
-  if [ "${other}" = "a" ]; then
-    other_status="${status_a}"
-  else
-    other_status="${status_b}"
-  fi
-
-  if [ "${other_status}" = "bad" ]; then
-    die "Cannot rollback: slot ${other} is marked as 'bad'"
-  fi
-
-  if [ -z "${other_status}" ]; then
-    die "Cannot rollback: slot ${other} is empty (never written)"
-  fi
+  other=$(get_inactive_slot "${running}")
+  slot_partitions "${running}" "${other}" >/dev/null || exit 1
+  [ "$(slot_status "${other}")" = good ] || die "Cannot roll back: slot ${other} is not a confirmed good boot"
 
   active_slot="${other}"
-  write_ab_state
+  write_ab_state || die "Cannot select rollback slot ${other}"
 
   log "Active slot switched to ${other}."
   log "Reboot to complete rollback. Run 'reboot' when ready."
-}
+)
+
+cmd_reboot_ready() (
+  lock_ab_state
+  read_ab_state || die "Invalid A/B state"
+  local running inactive retry
+  running=$(get_running_slot) || die "Cannot identify running slot"
+  inactive=$(get_inactive_slot "${running}")
+  slot_partitions "${running}" "${inactive}" >/dev/null || exit 1
+  retry="retry_${inactive}"
+  [ "${active_slot}" = "${inactive}" ] && [ "$(slot_status "${inactive}")" = pending ] &&
+    [ "${!retry}" -lt "${max_retries}" ] ||
+    die "No staged update. Run 'gaoos-update canary' first."
+  printf '%s\n' "${inactive}"
+)
 
 cmd_confirm() {
   # Manual confirmation must satisfy exactly the same health gate as boot-time
   # confirmation; it cannot turn a damaged or wrong root filesystem good.
   exec /usr/bin/gaoos-boot-confirm
-}
-
-cmd_canary() {
-  log "Starting canary update (download + verify + apply, no reboot)..."
-
-  # Step 1: Check
-  local version
-  version=$(cmd_check)
-  if [ "${version}" = "no" ] || [ -z "${version}" ]; then
-    log "No update available."
-    return 0
-  fi
-
-  # Step 2: Download
-  local image_path
-  image_path=$(cmd_download "" "")
-
-  # Step 3: Apply
-  cmd_apply "${image_path}"
-
-  log "Canary complete. System is staged on inactive slot."
-  log "Run 'reboot' when ready to switch."
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -618,12 +468,20 @@ shift || true
 
 case "${cmd}" in
   status)   cmd_status ;;
-  check)    cmd_check ;;
-  download) cmd_download "${1:-}" "${2:-}" ;;
-  apply)    cmd_apply "${1:-}" ;;
-  canary)   cmd_canary ;;
+  check|download|canary)
+    load_ota_client || die "OTA client is unavailable"
+    "cmd_ota_${cmd}" "$@"
+    ;;
+  apply)
+    if load_ota_client; then
+      cmd_ota_apply "${1:-}"
+    else
+      cmd_apply "${1:-}"
+    fi
+    ;;
   rollback) cmd_rollback ;;
   confirm)  cmd_confirm ;;
+  reboot-ready) cmd_reboot_ready ;;
   -h|--help|help|"")
     usage
     ;;

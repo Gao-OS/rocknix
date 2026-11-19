@@ -13,8 +13,8 @@ if [ "${DEVICE}" = "RK3566" ]; then
   PKG_DEPENDS_TARGET="toolchain u-boot-Generic"
 fi
 # Install upstream scripts before overriding their update entry points.
-PKG_DEPENDS_TARGET+=" rocknix"
-PKG_LONGDESC="GaoOS A/B dual-slot boot system with atomic, rollback-safe OTA updates"
+PKG_DEPENDS_TARGET+=" rocknix squashfs-tools openssl"
+PKG_LONGDESC="GaoOS A/B root filesystem updates and rollback"
 PKG_TOOLCHAIN="manual"
 
 make_target() {
@@ -25,6 +25,16 @@ make_target() {
   fi
   "${mkimage_tool}" -C none -A ${TARGET_KERNEL_ARCH} -T script \
     -d ${PKG_DIR}/boot/boot.cmd ${PKG_BUILD}/boot.scr
+
+  if [ "${DEVICE}:${TARGET_ARCH}" = "RK3566:aarch64" ]; then
+    (
+      cd "${PKG_DIR}/src/ota"
+      CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOENV=off GOFLAGS= \
+        GOTOOLCHAIN=local GOWORK=off GOPROXY=off \
+        GOCACHE="${PKG_BUILD}/.go-cache" \
+        go build -trimpath -buildvcs=false -o "${PKG_BUILD}/gaoos-ota-helper" .
+    )
+  fi
 }
 
 makeinstall_target() {
@@ -40,6 +50,12 @@ makeinstall_target() {
   mkdir -p ${INSTALL}/usr/bin
   cp ${PKG_DIR}/src/gaoos-update ${INSTALL}/usr/bin/gaoos-update
   chmod 755 ${INSTALL}/usr/bin/gaoos-update
+
+  install -Dm644 "${PKG_DIR}/src/gaoos-ota-client.sh" "${INSTALL}/usr/lib/gaoos/gaoos-ota-client.sh"
+  install -m755 "${PKG_DIR}/src/gaoos-ota-report" "${INSTALL}/usr/bin/gaoos-ota-report"
+  if [ "${DEVICE}:${TARGET_ARCH}" = "RK3566:aarch64" ]; then
+    install -m755 "${PKG_BUILD}/gaoos-ota-helper" "${INSTALL}/usr/bin/gaoos-ota-helper"
+  fi
 
   # ES integration wrappers — replace upstream update scripts
   # These override rocknix-update, updatecheck, and system-upgrade
@@ -79,6 +95,9 @@ makeinstall_target() {
   mkdir -p ${INSTALL}/usr/lib/systemd/system
   cp ${PKG_DIR}/system.d/gaoos-boot-confirm.service ${INSTALL}/usr/lib/systemd/system/
   cp ${PKG_DIR}/system.d/gaoos-watchdog.service ${INSTALL}/usr/lib/systemd/system/
+  if [ "${DEVICE}:${TARGET_ARCH}" = "RK3566:aarch64" ]; then
+    cp ${PKG_DIR}/system.d/gaoos-ota-report.{service,timer} ${INSTALL}/usr/lib/systemd/system/
+  fi
 
   # Default config
   mkdir -p ${INSTALL}/usr/share/gaoos
@@ -88,4 +107,7 @@ makeinstall_target() {
 post_install() {
   enable_service gaoos-boot-confirm.service
   enable_service gaoos-watchdog.service
+  if [ "${DEVICE}:${TARGET_ARCH}" = "RK3566:aarch64" ]; then
+    enable_service gaoos-ota-report.timer
+  fi
 }

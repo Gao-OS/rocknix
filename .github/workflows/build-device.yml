@@ -23,9 +23,14 @@ on:
         description: "build official version"
         type: string
         required: true
+      OTA_CHANNEL:
+        description: "Validate an RGB30 OTA candidate when set"
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   build-arm:
@@ -39,6 +44,7 @@ jobs:
   build-aarch64-toolchain:
     permissions:
       contents: read
+      packages: read
       actions: write
     uses: ./.github/workflows/build-aarch64-toolchain.yml
     secrets: inherit
@@ -86,6 +92,7 @@ jobs:
   build-aarch64-emu-libretro:
     permissions:
       contents: read
+      packages: read
       actions: write
     needs:
       - build-aarch64
@@ -126,6 +133,7 @@ jobs:
       OWNER_LC: ${{ inputs.OWNER_LC }}
       NIGHTLY: ${{ inputs.NIGHTLY }}
       OFFICIAL: ${{ inputs.OFFICIAL }}
+      OTA_CHANNEL: ${{ inputs.OTA_CHANNEL }}
 
   purge-artifact:
     name: Artifacts cleanup
