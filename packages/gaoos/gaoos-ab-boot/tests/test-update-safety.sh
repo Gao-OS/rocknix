@@ -444,6 +444,34 @@ print("2\\t{self.digest(self.image_file)}\\t{self.image_file.stat().st_size}\\t2
         self.assertTrue(all(event["release_id"] == release for event in received))
         self.assertEqual(len({event["attempt_id"] for event in received}), 1)
 
+    def test_interrupted_write_intent_can_retry_without_reboot_on_empty_slot(self):
+        release = self.prepare_live_offer()
+        self.state.write_bytes(self.original_state.replace(b"status_b=good\n", b""))
+        ota_dir = self.stage / ".ota"
+        ota_dir.mkdir()
+        abandoned = "00000000-0000-4000-a000-000000000044"
+        boot_id = (self.root / "boot-id").read_text().strip()
+        (ota_dir / "install").write_text(f"{release}\t{abandoned}\ta\tb\t2\t2\t{boot_id}\tintent\n")
+        (ota_dir / f"attempt-{release}").write_text(abandoned + "\n")
+        self.assert_success(self.run_command("gaoos-update", "canary"))
+        self.assertIn(b"status_b=pending\n", self.state.read_bytes())
+        self.assertFalse((self.root / "rebooted").exists())
+        event = json.loads((ota_dir / "events" / f"{abandoned}-failed.json").read_text())
+        self.assertEqual(event["detail"], "write")
+        self.assertFalse((ota_dir / "events" / f"{abandoned}-staged.json").exists())
+
+    def test_pending_manual_install_cannot_become_an_ota_attempt(self):
+        self.prepare_live_offer()
+        download = self.run_command("gaoos-update", "download")
+        self.assert_success(download)
+        manual_state = self.original_state.replace(b"active_slot=a", b"active_slot=b")
+        manual_state = manual_state.replace(b"status_b=good", b"status_b=pending")
+        self.state.write_bytes(manual_state)
+        result = self.run_command("gaoos-update", "apply", download.stdout.strip())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.state.read_bytes(), manual_state)
+        self.assertFalse((self.stage / ".ota" / "install").exists())
+
     def test_reboot_menu_checks_state_as_data_and_requires_a_pending_next_boot(self):
         rebooted = self.root / "rebooted"
         for state in (self.original_state, self.original_state + b"echo=unsafe\n",

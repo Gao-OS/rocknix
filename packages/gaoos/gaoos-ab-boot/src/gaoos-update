@@ -283,7 +283,7 @@ cmd_status() {
 }
 
 cmd_apply() (
-  local image="$1" expected_sha256="${2:-}" expected_bytes="${3:-}"
+  local image="$1" expected_sha256="${2:-}" expected_bytes="${3:-}" ota_attempt="${4:-}"
   local running inactive partitions source_part target_part running_status
   local image_size target_capacity src_hash written_hash format used_bytes
   local target_status target_retry
@@ -359,6 +359,10 @@ cmd_apply() (
   fi
   src_hash=$(sha256sum "${image}" | awk '{print $1}') || die "Cannot hash image"
   [ -z "${expected_sha256}" ] || [ "${src_hash}" = "${expected_sha256}" ] || die "Signed artifact checksum mismatch"
+
+  if [ -n "${ota_attempt}" ]; then
+    ota_record_intent "${ota_attempt}" "${running}" "${inactive}" || die "Cannot record the OTA write intent"
+  fi
 
   # From this point a failed or interrupted write can destroy the previous
   # contents of the inactive slot. Retire any bootable copy before writing.

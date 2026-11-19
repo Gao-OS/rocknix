@@ -146,18 +146,35 @@ ota_write_journal() {
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@" | ota_atomic "${OTA_JOURNAL}"
 }
 
+ota_record_intent() {
+  local attempt="$1" source="$2" target="$3" boot_id
+  boot_id=$(ota_boot_id) && ota_uuid "${boot_id}" || return 1
+  ota_write_journal "${OTA_RELEASE}" "${attempt}" "${source}" "${target}" \
+    "${OTA_VERSION}" "${OTA_SEQUENCE}" "${boot_id}" intent
+}
+
 ota_state_value() {
   local key="$1"
-  awk -F= -v key="${key}" '$1==key {n++; value=$2} END {if(n!=1) exit 1; print value}' /flash/ab_state.env
+  awk -F= -v key="${key}" '
+    $1==key {n++; value=$2; if(NF!=2) invalid=1}
+    END {
+      # U-Boot omits an empty slot status when it exports its environment.
+      if(n==0 && key ~ /^status_[ab]$/) exit 0
+      if(n!=1 || invalid) exit 1
+      print value
+    }
+  ' /flash/ab_state.env
 }
 
 ota_reconcile() {
   [ -f "${OTA_JOURNAL}" ] || return 0
   local release attempt source target version sequence boot_id phase running active status retries
+  local attempt_file
   IFS=$'\t' read -r release attempt source target version sequence boot_id phase <"${OTA_JOURNAL}" || return 1
   ota_uuid "${release}" && ota_uuid "${attempt}" && ota_uuid "${boot_id}" || return 1
   case "${source}:${target}" in a:b|b:a) ;; *) return 1 ;; esac
   case "${phase}" in intent|staged) ;; *) return 1 ;; esac
+  attempt_file="${OTA_DIR}/attempt-${release}"
 
   # A missing or ambiguous boot claim must never create a success event.
   running=$(awk '{
@@ -174,15 +191,16 @@ ota_reconcile() {
     ota_event "${release}" "${attempt}" staged &&
       ota_event "${release}" "${attempt}" booted &&
       ota_event "${release}" "${attempt}" confirmed &&
-      rm -f -- "${OTA_JOURNAL}"
+      rm -f -- "${OTA_JOURNAL}" "${attempt_file}"
   elif [ "${running}" = "${source}" ] && [ "${active}" = "${source}" ] && [ "${status}" = bad ] &&
     [[ "${retries}" =~ ^[1-3]$ ]]; then
     ota_event "${release}" "${attempt}" staged &&
       ota_event "${release}" "${attempt}" rolled_back &&
-      rm -f -- "${OTA_JOURNAL}"
-  elif [ "${phase}" = intent ] && [ "${running}" = "${source}" ] && [ "${active}" = "${source}" ] &&
-    [ "$(ota_boot_id)" != "${boot_id}" ]; then
-    ota_event "${release}" "${attempt}" failed write && rm -f -- "${OTA_JOURNAL}"
+      rm -f -- "${OTA_JOURNAL}" "${attempt_file}"
+  elif [ "${phase}" = intent ] && [ "${running}" = "${source}" ] && [ "${active}" = "${source}" ]; then
+    # The updater holds the OTA lock until the write and journal update have
+    # completed. An unselected intent under this lock has no live writer.
+    ota_event "${release}" "${attempt}" failed write && rm -f -- "${OTA_JOURNAL}" "${attempt_file}"
   elif [ "${active}" = "${target}" ]; then
     ota_event "${release}" "${attempt}" staged
   fi
@@ -205,6 +223,8 @@ cmd_ota_check() (
 
 ota_download_locked() {
   local url="${1:-}" digest="${2:-}" rc release attempt_file attempt stale
+  ota_reconcile || log "Could not reconcile the previous OTA attempt"
+  [ ! -f "${OTA_JOURNAL}" ] || die "Finish or recover the existing OTA boot attempt first"
   ota_boot_arguments || die "Cannot verify the running RGB30 boot components"
   progress 0 "Checking and downloading signed update..."
   if ota_request discover; then
@@ -247,7 +267,7 @@ cmd_ota_download() (
 )
 
 ota_apply_locked() {
-  local image="$1" expected first_release first_sha first_size running target attempt attempt_file boot_id rc
+  local image="$1" expected first_release first_sha first_size running attempt attempt_file rc
   ota_reconcile || log "Could not reconcile the previous OTA attempt"
   [ ! -f "${OTA_JOURNAL}" ] || die "Finish or recover the existing OTA boot attempt first"
 
@@ -278,21 +298,15 @@ ota_apply_locked() {
     [ "${OTA_SIZE}" = "${first_size}" ] || die "This release has been replaced"
 
   running=$(get_running_slot) || return 1
-  target=$(get_inactive_slot "${running}") || return 1
-  boot_id=$(ota_boot_id) || return 1
-  ota_write_journal "${OTA_RELEASE}" "${attempt}" "${running}" "${target}" \
-    "${OTA_VERSION}" "${OTA_SEQUENCE}" "${boot_id}" intent || die "Cannot record the OTA write intent"
 
-  if cmd_apply "${image}" "${OTA_SHA}" "${OTA_SIZE}"; then
-    ota_write_journal "${OTA_RELEASE}" "${attempt}" "${running}" "${target}" \
-      "${OTA_VERSION}" "${OTA_SEQUENCE}" "${boot_id}" staged || log "Could not update the OTA journal"
+  if cmd_apply "${image}" "${OTA_SHA}" "${OTA_SIZE}" "${attempt}"; then
     ota_event "${OTA_RELEASE}" "${attempt}" staged || log "Could not queue staging telemetry"
     rm -f -- "${image}" "${attempt_file}" || log "Could not remove the applied download"
   else
     rc=$?
     # A failed flush after renaming boot state can leave a pending slot. Keep
     # its journal for the next boot to resolve.
-    if [ "$(ota_state_value active_slot)" = "${running}" ]; then
+    if [ ! -f "${OTA_JOURNAL}" ] || [ "$(ota_state_value active_slot)" = "${running}" ]; then
       ota_event "${OTA_RELEASE}" "${attempt}" failed write || log "Could not queue failure telemetry"
       rm -f -- "${OTA_JOURNAL}" "${attempt_file}"
     fi
