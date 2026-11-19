@@ -237,67 +237,14 @@ jobs:
   register-ota:
     if: github.event_name == 'workflow_dispatch' && github.repository == 'Gao-OS/rocknix' && github.ref == 'refs/heads/gaoos' && inputs.RK3566 && contains(fromJSON('["nightly","beta","stable"]'), inputs.ota_channel)
     needs: build-devices
-    environment: ota-signing
-    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - name: Download the same-run RGB30 validation report
-        uses: actions/download-artifact@v8
-        with:
-          name: GaoOS-ota-RGB30-validation
-          path: ota-validation
-      - name: Download the same-run RK3566 raw payload
-        uses: actions/download-artifact@v8
-        with:
-          pattern: GaoOS-update-RK3566-*
-          path: ota-artifact
-      - name: Read build identity
-        id: candidate
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          shopt -s nullglob
-          systems=(ota-artifact/GaoOS-update-RK3566-*/GaoOS-RK3566.aarch64-*.squashfs)
-          [[ ${#systems[@]} == 1 ]] || { echo "Expected exactly one RK3566 SquashFS"; exit 1; }
-          created=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at)
-          issued=$(date --date="$created" +%s)
-          echo "artifact=${systems[0]}" >> "$GITHUB_OUTPUT"
-          echo "issued=$issued" >> "$GITHUB_OUTPUT"
-          echo "expires=$((issued + 30 * 86400))" >> "$GITHUB_OUTPUT"
-      - name: Sign the validated OTA manifest
-        env:
-          GAOOS_OTA_SIGNING_KEY: ${{ secrets.GAOOS_OTA_SIGNING_KEY }}
-          OTA_CHANNEL: ${{ inputs.ota_channel }}
-          ARTIFACT: ${{ steps.candidate.outputs.artifact }}
-          ISSUED: ${{ steps.candidate.outputs.issued }}
-          EXPIRES: ${{ steps.candidate.outputs.expires }}
-        run: |
-          python3 .github/scripts/sign-ota-release.py --report ota-validation/report.json \
-            --artifact "$ARTIFACT" --commit "$GITHUB_SHA" --sequence "$GITHUB_RUN_NUMBER" \
-            --channel "$OTA_CHANNEL" --issued-at "$ISSUED" --expires-at "$EXPIRES" --output signed-ota.json
-      - name: Upload immutable payload and register the candidate
-        env:
-          GAOOS_OTA_S3_ENDPOINT: ${{ vars.GAOOS_OTA_S3_ENDPOINT }}
-          GAOOS_OTA_S3_BUCKET: ${{ vars.GAOOS_OTA_S3_BUCKET }}
-          GAOOS_OTA_API_URL: ${{ vars.GAOOS_OTA_API_URL }}
-          GAOOS_OTA_PUBLICATION_TOKEN: ${{ secrets.GAOOS_OTA_PUBLICATION_TOKEN }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.GAOOS_OTA_S3_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.GAOOS_OTA_S3_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ vars.GAOOS_OTA_S3_REGION }}
-          ARTIFACT: ${{ steps.candidate.outputs.artifact }}
-        run: bash .github/scripts/register-ota-release.sh "$ARTIFACT" ota-validation/report.json signed-ota.json
-      - name: Archive the signed envelope
-        uses: actions/upload-artifact@v7
-        with:
-          name: GaoOS-ota-RGB30-signed
-          path: signed-ota.json
-          overwrite: true
-          if-no-files-found: error
+    uses: ./.github/workflows/register-ota.yml
+    with:
+      source_run_id: ${{ github.run_id }}
+      ota_channel: ${{ inputs.ota_channel }}
+    secrets: inherit
 
   release-nightly:
      if: ${{ always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.repository_owner == 'Gao-OS' && needs.set-envs.outputs.NIGHTLY == 'yes' && github.event_name != 'pull_request' && (inputs.ota_channel == '' || inputs.ota_channel == 'disabled') }}

@@ -149,6 +149,11 @@ the rootfs sequence, source commit, and loaded kernel module release, and
 records the exact kernel and RGB30 DTB hashes. Its report archive retains the validation commands and
 `HARDWARE_BOOT_UNVERIFIED` status.
 
+After physical acceptance of a `validate-only` run, dispatch **Register validated
+RGB30 OTA** on `gaoos`. Set `source_run_id` to that successful Build run and
+choose the target channel. The signer downloads the retained report and SquashFS
+from the selected run and keeps the original firmware commit and sequence.
+
 Configure the GitHub `ota-signing` environment for the `gaoos` branch and
 required reviewers. Supply these environment settings before registration.
 

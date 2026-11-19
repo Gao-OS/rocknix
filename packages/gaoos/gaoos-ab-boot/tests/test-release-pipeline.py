@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -115,9 +116,12 @@ class ReleasePipeline(unittest.TestCase):
                     r" +uses: softprops/action-gh-release@", source)
                 self.assertEqual(len(guarded_writes), cache_writes)
 
-    def test_signed_ota_requires_validated_same_run_artifacts_and_protected_signing(self):
+    def test_signed_ota_uses_a_verified_build_run_and_protected_signing(self):
         source = (WORKFLOWS / 'build-nightly.yml').read_text()
         block = job(source, 'register-ota')
+        registration = (WORKFLOWS / 'register-ota.yml').read_text()
+        candidate = job(registration, 'source')
+        signer = job(registration, 'register')
         image = (WORKFLOWS / 'build-aarch64-image.yml').read_text()
         self.assertIn("github.event_name == 'workflow_dispatch'", block)
         self.assertIn("github.repository == 'Gao-OS/rocknix'", block)
@@ -125,15 +129,57 @@ class ReleasePipeline(unittest.TestCase):
         self.assertIn("- validate-only", source)
         self.assertNotIn("validate-only", block)
         self.assertIn("OTA_CHANNEL:", job(source, "build-devices"))
-        self.assertIn('environment: ota-signing', block)
+        self.assertIn('needs: build-devices', block)
+        self.assertIn('source_run_id: ${{ github.run_id }}', block)
+        self.assertIn('workflow_dispatch:', registration)
+        self.assertIn("github.repository == 'Gao-OS/rocknix'", candidate)
+        self.assertIn("github.ref == 'refs/heads/gaoos'", candidate)
+        self.assertIn('ota-source-run.sh', candidate)
+        self.assertNotIn('GAOOS_OTA_SIGNING_KEY', candidate)
+        self.assertIn('needs: source', signer)
+        self.assertIn('environment: ota-signing', signer)
         self.assertNotIn('GAOOS_OTA_SIGNING_KEY', image)
         self.assertIn('gaoos-validate-image.py', image)
         self.assertIn('GaoOS-ota-RGB30-validation', image)
-        self.assertIn('GaoOS-ota-RGB30-validation', block)
-        self.assertLess(block.index('sign-ota-release.py'), block.index('register-ota-release.sh'))
+        self.assertIn('GaoOS-ota-RGB30-validation', signer)
+        self.assertEqual(signer.count('run-id: ${{ needs.source.outputs.run_id }}'), 2)
+        self.assertIn('COMMIT: ${{ needs.source.outputs.commit }}', signer)
+        self.assertIn('SEQUENCE: ${{ needs.source.outputs.sequence }}', signer)
+        self.assertLess(signer.index('sign-ota-release.py'), signer.index('register-ota-release.sh'))
         self.assertNotIn('contents: write', block)
+        self.assertNotIn('contents: write', registration)
         for name in ['release-nightly', 'release-official']:
             self.assertIn("inputs.ota_channel == 'disabled'", job(source, name))
+
+    def test_registration_selects_the_single_flat_artifact_download(self):
+        registration = (WORKFLOWS / 'register-ota.yml').read_text()
+        step = registration.split('      - name: Select the RK3566 payload\n', 1)[1]
+        step = step.split('      - name:', 1)[0]
+        select_payload = textwrap.dedent(step.split('        run: |\n', 1)[1])
+
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            downloads = work / 'ota-artifact'
+            downloads.mkdir()
+            payload = downloads / 'GaoOS-RK3566.aarch64-20261120.squashfs'
+            payload.touch()
+            output = work / 'outputs'
+            env = {**os.environ, 'GITHUB_OUTPUT': str(output)}
+            result = subprocess.run(['bash', '-ec', select_payload], cwd=work, env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_text(), f'artifact=ota-artifact/{payload.name}\n')
+
+            # With merging disabled, multiple matching archives get nested directories.
+            archive_a = downloads / 'GaoOS-update-RK3566-20261120'
+            archive_b = downloads / 'GaoOS-update-RK3566-20261121'
+            archive_a.mkdir()
+            archive_b.mkdir()
+            payload.rename(archive_a / payload.name)
+            (archive_b / payload.name).touch()
+            result = subprocess.run(['bash', '-ec', select_payload], cwd=work, env=env,
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
 
     def test_stable_release_remains_draft_without_hardware_acceptance(self):
         source = (WORKFLOWS / 'build-nightly.yml').read_text()
@@ -294,6 +340,91 @@ esac
             self.assertIn('**Specific handhelds**', result.stdout)
             self.assertNotIn('GaoOS-RK3566.aarch64-20261010', result.stdout)
             self.assertNotIn('GaoOS-RK3326.aarch64-', result.stdout)
+
+
+class OTASourceRun(unittest.TestCase):
+    def setUp(self):
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        self.work = Path(workspace.name)
+        commands = self.work / 'bin'
+        commands.mkdir()
+        gh = commands / 'gh'
+        gh.write_text('''#!/bin/bash
+set -eu
+[[ "$1" == api ]]
+if [[ "$#" -eq 4 ]]; then
+  [[ "$2" == "repos/Gao-OS/rocknix/actions/runs/$GITHUB_RUN_ID" && "$3" == --jq && "$4" == .created_at ]]
+  echo '2023-11-14T22:13:20Z'
+else
+  [[ "$2" == "repos/Gao-OS/rocknix/actions/runs/44585005922" ]]
+  cat "$SOURCE_RUN_INFO"
+fi
+''')
+        gh.chmod(0o755)
+        self.output = self.work / 'github-output'
+        self.info = self.work / 'source-run.json'
+        self.env = {
+            **os.environ,
+            'PATH': str(commands) + ':' + os.environ['PATH'],
+            'GITHUB_REPOSITORY': 'Gao-OS/rocknix',
+            'GITHUB_REF': 'refs/heads/gaoos',
+            'GITHUB_RUN_ID': '44590000000',
+            'GITHUB_SHA': 'b' * 40,
+            'GITHUB_OUTPUT': str(self.output),
+            'SOURCE_RUN_INFO': str(self.info),
+        }
+        self.source = {
+            'id': 44585005922,
+            'path': '.github/workflows/build-nightly.yml',
+            'event': 'workflow_dispatch',
+            'head_branch': 'gaoos',
+            'head_sha': 'a' * 40,
+            'run_number': 159,
+            'status': 'completed',
+            'conclusion': 'success',
+            'repository': {'full_name': 'Gao-OS/rocknix'},
+            'head_repository': {'full_name': 'Gao-OS/rocknix'},
+        }
+
+    def verify(self, run='44585005922', **env):
+        self.info.write_text(json.dumps(self.source))
+        return run_script(ROOT / '.github/scripts/ota-source-run.sh', [run], self.work,
+                          env={**self.env, **env})
+
+    def test_retained_artifacts_keep_the_build_commit_and_sequence(self):
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        outputs = dict(line.split('=', 1) for line in self.output.read_text().splitlines())
+        self.assertEqual(outputs, {'run_id': '44585005922', 'commit': 'a' * 40,
+                                  'sequence': '159', 'issued': '1700000000',
+                                  'expires': str(1700000000 + 30 * 86400)})
+
+    def test_only_the_current_build_can_register_before_completion(self):
+        self.source.update(status='in_progress', conclusion=None)
+        self.assertNotEqual(self.verify().returncode, 0)
+        self.assertNotEqual(self.verify(GITHUB_RUN_ID='44585005922').returncode, 0)
+        result = self.verify(GITHUB_RUN_ID='44585005922', GITHUB_SHA='a' * 40)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_other_workflows_branches_and_failed_runs_are_rejected(self):
+        for field, value in (
+                ('id', 44580000000),
+                ('path', '.github/workflows/register-ota.yml'),
+                ('event', 'pull_request'),
+                ('head_branch', 'review'),
+                ('head_repository', {'full_name': 'fork/rocknix'}),
+                ('conclusion', 'failure'),
+                ('head_sha', 'missing'),
+                ('run_number', 0)):
+            with self.subTest(field=field):
+                original = self.source[field]
+                self.source[field] = value
+                self.assertNotEqual(self.verify().returncode, 0)
+                self.assertFalse(self.output.exists())
+                self.source[field] = original
+        self.assertNotEqual(self.verify(run='44585005922/attempts/1').returncode, 0)
+        self.assertNotEqual(self.verify(GITHUB_REF='refs/heads/review').returncode, 0)
 
 
 class SignedOTAPipeline(unittest.TestCase):
