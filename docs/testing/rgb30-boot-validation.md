@@ -231,7 +231,9 @@ Record image SHA256, source commit, card/device identity, logs and result for:
    mounted and unchanged, B is pending, and the device has yet to reboot.
 4. Reboot manually into B. Confirm that it reaches the frontend and becomes good
    after the health checks. Verify that the server receives the deployment and
-   boot confirmation for the device and target sequence.
+   boot confirmation for the device and target sequence. If the server rejects
+   an event permanently, inspect `/storage/.update/.ota/rejected-events` on the
+   device. Temporary delivery failures stay queued for retry.
 5. Test explicit local rollback while both slots are confirmed good. Cold boot
    and verify the health state and original saves and configuration.
 6. Revoke a test release and verify that new discovery stops offering it.

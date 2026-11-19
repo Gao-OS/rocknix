@@ -26,6 +26,10 @@ case "${1:-}" in
       [ -f "${event}" ] || continue
       if "${OTA_HELPER}" event --api "${UPDATE_API_URL}" --token-file "${UPDATE_TOKEN_FILE}" --event-file "${event}"; then
         rm -f -- "${event}"
+      elif [ "$?" -eq 4 ]; then
+        # Preserve permanently rejected reports for diagnosis outside the retry queue.
+        mkdir -p -- "${OTA_REJECTED_EVENTS}"
+        mv -f -- "${event}" "${OTA_REJECTED_EVENTS}/"
       fi
       remaining=$(( remaining - 1 ))
       [ "${remaining}" -gt 0 ] || break

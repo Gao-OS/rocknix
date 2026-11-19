@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -248,5 +249,45 @@ func TestLiveDiscoveryRejectsUnsafeArtifactOriginAndHonorsRevocation(t *testing.
 	active.Store(false)
 	if _, err := c.discover(context.Background(), testClaim(), keys); err != errNoOffer {
 		t.Fatal("revoked offer was reused", err)
+	}
+}
+
+func TestReportDistinguishesPermanentRejectionFromRetryableFailure(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    int
+		body      string
+		permanent bool
+	}{
+		{"recorded", http.StatusCreated, `{"status":"recorded"}`, false},
+		{"duplicate", http.StatusOK, `{"status":"duplicate"}`, false},
+		{"invalid event", http.StatusUnprocessableEntity, `{"error":"invalid_event"}`, true},
+		{"conflicting event", http.StatusConflict, `{"error":"event_conflict"}`, true},
+		{"unauthorized", http.StatusUnauthorized, `{"error":"unauthorized"}`, false},
+		{"unavailable", http.StatusServiceUnavailable, `{"error":"temporarily_unavailable"}`, false},
+		{"unexpected conflict", http.StatusConflict, `{"error":"sequence_conflict"}`, false},
+		{"non-API response", http.StatusUnprocessableEntity, "The request could not be processed", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/events" {
+					t.Error("invalid event request")
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			api, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := &client{api: api, token: "event-test", control: server.Client()}
+			err = c.report(context.Background(), []byte("{}"))
+			acknowledged := tc.status == http.StatusOK || tc.status == http.StatusCreated
+			if (err == nil) != acknowledged || errors.Is(err, errRejectedEvent) != tc.permanent {
+				t.Fatalf("unexpected event result: %v", err)
+			}
+		})
 	}
 }

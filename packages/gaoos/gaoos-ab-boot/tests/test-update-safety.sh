@@ -444,6 +444,35 @@ print("2\\t{self.digest(self.image_file)}\\t{self.image_file.stat().st_size}\\t2
         self.assertTrue(all(event["release_id"] == release for event in received))
         self.assertEqual(len({event["attempt_id"] for event in received}), 1)
 
+    def test_rejected_reports_do_not_block_later_events(self):
+        self.executable("gaoos-ota-client.sh", self.remap("gaoos-ota-client.sh"))
+        self.executable("gaoos-ota-report", self.remap("gaoos-ota-report"))
+        (self.storage / ".config").mkdir()
+        (self.storage / ".config" / "gaoos-ab.conf").write_text('UPDATE_API_URL="https://ota.test"\n')
+        self.executable("gaoos-ota-helper", '''#!/bin/bash
+case "${!#}" in
+  */old-*) exit 4 ;;
+  */transient.json) exit 1 ;;
+  *) exit 0 ;;
+esac
+''')
+        ota_dir = self.stage / ".ota"
+        queued = ota_dir / "events"
+        queued.mkdir(parents=True)
+        for i in range(5):
+            (queued / f"old-{i}.json").write_text(f"old event {i}")
+        (queued / "ready.json").write_text("acknowledged event")
+        (queued / "transient.json").write_text("retryable event")
+
+        self.assert_success(self.run_command("gaoos-ota-report", "flush"))
+        self.assert_success(self.run_command("gaoos-ota-report", "flush"))
+
+        rejected = ota_dir / "rejected-events"
+        self.assertEqual(sorted(p.name for p in queued.iterdir()), ["transient.json"])
+        self.assertEqual((queued / "transient.json").read_text(), "retryable event")
+        self.assertEqual(sorted(p.read_text() for p in rejected.iterdir()),
+                         [f"old event {i}" for i in range(5)])
+
     def test_interrupted_write_intent_can_retry_without_reboot_on_empty_slot(self):
         release = self.prepare_live_offer()
         self.state.write_bytes(self.original_state.replace(b"status_b=good\n", b""))

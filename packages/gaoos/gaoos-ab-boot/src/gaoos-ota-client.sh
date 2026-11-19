@@ -18,6 +18,7 @@ ota_load_config() {
 ota_paths() {
   OTA_DIR="${STAGING_DIR}/.ota"
   OTA_EVENTS="${OTA_DIR}/events"
+  OTA_REJECTED_EVENTS="${OTA_DIR}/rejected-events"
   OTA_JOURNAL="${OTA_DIR}/install"
   UPDATE_TOKEN_FILE="${UPDATE_TOKEN_FILE:-/storage/.config/gaoos-ota/device-token}"
   UPDATE_TRUST_FILE="${UPDATE_TRUST_FILE:-/storage/.config/gaoos-ota/trusted-keys.json}"
@@ -130,7 +131,7 @@ ota_event() {
     *) return 1 ;;
   esac
   path="${OTA_EVENTS}/${attempt}-${type}.json"
-  [ ! -f "${path}" ] || return 0
+  [ ! -f "${path}" ] && [ ! -f "${OTA_REJECTED_EVENTS}/${path##*/}" ] || return 0
 
   # A stable ID also deduplicates a journal event replay after a successful send.
   local digest

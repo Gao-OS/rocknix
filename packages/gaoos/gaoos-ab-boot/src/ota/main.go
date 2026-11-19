@@ -92,6 +92,9 @@ func main() {
 		os.Exit(3)
 	default:
 		fmt.Fprintln(os.Stderr, "gaoos-ota:", err)
+		if errors.Is(err, errRejectedEvent) {
+			os.Exit(4)
+		}
 		os.Exit(1)
 	}
 }

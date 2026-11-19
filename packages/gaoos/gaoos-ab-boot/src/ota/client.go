@@ -22,8 +22,9 @@ import (
 )
 
 var (
-	errNoOffer   = errors.New("no update offered")
-	tokenPattern = regexp.MustCompile("^[0-9a-f-]{36}\\.[A-Za-z0-9_-]{43}$")
+	errNoOffer       = errors.New("no update offered")
+	errRejectedEvent = errors.New("OTA event rejected")
+	tokenPattern     = regexp.MustCompile("^[0-9a-f-]{36}\\.[A-Za-z0-9_-]{43}$")
 )
 
 type offer struct {
@@ -189,10 +190,22 @@ func (c *client) report(ctx context.Context, data []byte) error {
 		return err
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated {
-		return fmt.Errorf("OTA event returned HTTP %d", response.StatusCode)
+	status := response.StatusCode
+	switch status {
+	case http.StatusOK, http.StatusCreated:
+		return nil
+	case http.StatusConflict, http.StatusUnprocessableEntity:
+		var reply struct {
+			Error string `json:"error"`
+		}
+		raw, err := readBounded(response.Body, maxMetadata)
+		if err == nil && decodeObject(raw, &reply, "error") == nil &&
+			((status == http.StatusConflict && reply.Error == "event_conflict") ||
+				(status == http.StatusUnprocessableEntity && reply.Error == "invalid_event")) {
+			return fmt.Errorf("%w: %s", errRejectedEvent, reply.Error)
+		}
 	}
-	return nil
+	return fmt.Errorf("OTA event returned HTTP %d", status)
 }
 
 func (o offer) filename(dir string) string {
