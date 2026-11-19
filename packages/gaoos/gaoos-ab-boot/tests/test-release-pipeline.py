@@ -80,12 +80,40 @@ class ReleasePipeline(unittest.TestCase):
             self.assert_permission(job(leaf, name), 'packages', 'read')
         for path in WORKFLOWS.glob('build-*.yml'):
             content = path.read_text()
-            if not ('docker run' in content and '/rocknix-build:latest' in content):
+            if 'docker run' not in content:
                 continue
             with self.subTest(workflow=path.name):
                 login = content.index('uses: docker/login-action@v4')
                 self.assertLess(login, content.index('docker run'))
                 self.assertIn("if: github.event_name != 'pull_request'", content[:login])
+
+    def test_validation_build_isolates_its_image_and_skips_shared_cache_writes(self):
+        nightly = (WORKFLOWS / 'build-nightly.yml').read_text()
+        device = (WORKFLOWS / 'build-device.yml').read_text()
+        docker = (WORKFLOWS / 'build-docker-image.yml').read_text()
+
+        select_image = job(nightly, 'set-envs')
+        self.assertIn('image_tag=latest', select_image)
+        self.assertIn('"$OTA_CHANNEL" == validate-only', select_image)
+        self.assertIn('image_tag="validation-${GITHUB_RUN_ID}"', select_image)
+        for caller in ('build-docker', 'build-devices'):
+            self.assertIn('BUILD_IMAGE: ${{ needs.set-envs.outputs.BUILD_IMAGE }}', job(nightly, caller))
+        self.assertIn('tags: ${{ inputs.BUILD_IMAGE }}', docker)
+
+        leaves = re.findall(r'uses: \./\.github/workflows/(build-[\w-]+\.yml)', device)
+        self.assertEqual(len(leaves), 9)
+        for name in leaves:
+            with self.subTest(workflow=name):
+                source = (WORKFLOWS / name).read_text()
+                self.assertIn('BUILD_IMAGE: ${{ inputs.BUILD_IMAGE }}', job(device, name[:-4]))
+                self.assertIn('BUILD_IMAGE: ${{ inputs.BUILD_IMAGE }}', source)
+                for command in (line for line in source.splitlines() if 'docker run' in line):
+                    self.assertIn('"$BUILD_IMAGE"', command)
+                cache_writes = source.count('uses: softprops/action-gh-release@')
+                guarded_writes = re.findall(
+                    r"(?m)^ +if: github\.event\.inputs\.ota_channel != 'validate-only'\n"
+                    r" +uses: softprops/action-gh-release@", source)
+                self.assertEqual(len(guarded_writes), cache_writes)
 
     def test_signed_ota_requires_validated_same_run_artifacts_and_protected_signing(self):
         source = (WORKFLOWS / 'build-nightly.yml').read_text()

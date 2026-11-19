@@ -140,10 +140,11 @@ physical-hardware gate. The legacy nightly and official workflows create drafts.
 Run the **Build** workflow from `Gao-OS/rocknix@gaoos` with **RK3566** selected.
 Choose `ota_channel: validate-only` to produce a qualified image, raw SquashFS,
 and validation report for physical testing. This mode requires no signing
-environment and leaves the candidate with the workflow artifacts. Choose
-`nightly`, `beta`, or `stable` to also sign and register it. The build uses the
-workflow run number as the immutable firmware sequence. The image validator
-compares the whole factory image and raw SquashFS from the same build, checks
+environment and leaves the candidate with the workflow artifacts. This mode tags
+the builder image with the workflow run ID and uses shared compiler caches
+read-only. Choose `nightly`, `beta`, or `stable` to also sign and register it.
+The build uses the workflow run number as the immutable firmware sequence. The
+image validator compares the whole factory image and raw SquashFS from the same build, checks
 the rootfs sequence, source commit, and loaded kernel module release, and
 records the exact kernel and RGB30 DTB hashes. Its report archive retains the validation commands and
 `HARDWARE_BOOT_UNVERIFIED` status.

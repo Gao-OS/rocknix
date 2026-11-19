@@ -3,8 +3,8 @@ name: Build Docker Image
 on:
   workflow_call:
     inputs:
-      OWNER_LC:
-        description: "repo owner name"
+      BUILD_IMAGE:
+        description: "Registry tag for the builder image"
         type: string
         required: true
 jobs:
@@ -31,4 +31,4 @@ jobs:
           context: .
           file: Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ghcr.io/${{ inputs.OWNER_LC }}/rocknix-build:latest
+          tags: ${{ inputs.BUILD_IMAGE }}

@@ -9,7 +9,7 @@ on:
       DEVICE:
         required: true
         type: string
-      OWNER_LC:
+      BUILD_IMAGE:
         required: true
         type: string
 
@@ -17,6 +17,7 @@ jobs:
   build-aarch64:
     runs-on: ubuntu-24.04
     env:
+      BUILD_IMAGE: ${{ inputs.BUILD_IMAGE }}
       DISTRO: GaoOS
       EMULATION_DEVICE: no
       ENABLE_32BIT: no
@@ -73,7 +74,7 @@ jobs:
           command: |
             ./scripts/get_env > .env
             set -e
-            { docker run --init --env-file .env --rm --user $(id -u):$(id -g) -v ${PWD}:${PWD} -w ${PWD} "ghcr.io/${{ inputs.OWNER_LC }}/rocknix-build:latest" \
+            { docker run --init --env-file .env --rm --user $(id -u):$(id -g) -v ${PWD}:${PWD} -w ${PWD} "$BUILD_IMAGE" \
               bash -c "./scripts/build_distro "; echo $? > docker_exit_code; } | tee output.log | grep -E  --color=never --line-buffered "^GET|^UNPACK|^BUILD|^INSTALL" || true
             exit_code=$(<docker_exit_code)
             exit $exit_code
@@ -108,7 +109,7 @@ jobs:
           command: |
             ./scripts/get_env > .env
             set -e
-            { docker run --init --env-file .env --rm --user $(id -u):$(id -g) -v ${PWD}:${PWD} -w ${PWD} "ghcr.io/${{ inputs.OWNER_LC }}/rocknix-build:latest" \
+            { docker run --init --env-file .env --rm --user $(id -u):$(id -g) -v ${PWD}:${PWD} -w ${PWD} "$BUILD_IMAGE" \
               bash -c "./scripts/build_mt modules "; echo $? > docker_exit_code; } | tee output.log | grep -E  --color=never --line-buffered "^GET|^UNPACK|^BUILD|^INSTALL" || true
             exit_code=$(<docker_exit_code)
             exit $exit_code
@@ -138,6 +139,7 @@ jobs:
           tar --remove-files -cf ccache-aarch64-${{ inputs.DEVICE }}.tar ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/.ccache
 
       - name: Save ccache
+        if: github.event.inputs.ota_channel != 'validate-only'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ccache

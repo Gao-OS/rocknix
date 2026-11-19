@@ -97,7 +97,7 @@ jobs:
     outputs:
       NIGHTLY: ${{ steps.set-release-type.outputs.NIGHTLY }}
       OFFICIAL: ${{ steps.set-release-type.outputs.OFFICIAL }}
-      OWNER_LC: ${{ steps.set-envs.outputs.OWNER_OUTPUT }}
+      BUILD_IMAGE: ${{ steps.set-envs.outputs.BUILD_IMAGE }}
       matrix: ${{ steps.generate.outputs.matrix }}
     steps:
       - name: Check RGB30 OTA dispatch scope
@@ -111,13 +111,17 @@ jobs:
             echo "OTA builds require selecting RK3566 on Gao-OS/rocknix@gaoos" >&2
             exit 1
           fi
-      - name: Set lowercase owner name
+      - name: Select the builder image
         id: set-envs
-        run: |
-          OWNER_LC="${OWNER,,}"
-          echo "OWNER_OUTPUT=${OWNER_LC}" >> $GITHUB_OUTPUT
         env:
           OWNER: ${{ github.repository_owner }}
+          OTA_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.ota_channel || '' }}
+        run: |
+          image_tag=latest
+          if [[ "$OTA_CHANNEL" == validate-only ]]; then
+            image_tag="validation-${GITHUB_RUN_ID}"
+          fi
+          printf 'BUILD_IMAGE=ghcr.io/%s/rocknix-build:%s\n' "${OWNER,,}" "$image_tag" >> "$GITHUB_OUTPUT"
       - name: Determine release type
         id: set-release-type
         run: |
@@ -192,7 +196,7 @@ jobs:
     needs: set-envs
     uses: ./.github/workflows/build-docker-image.yml
     with:
-      OWNER_LC: ${{ needs.set-envs.outputs.OWNER_LC }}
+      BUILD_IMAGE: ${{ needs.set-envs.outputs.BUILD_IMAGE }}
 
   build-devices:
     if: (github.event_name != 'schedule') || (github.repository == 'Gao-OS/rocknix' && github.ref_name == 'gaoos')
@@ -213,7 +217,7 @@ jobs:
     with:
       PROJECT: ${{ matrix.project }}
       DEVICE: ${{ matrix.device }}
-      OWNER_LC: ${{ needs.set-envs.outputs.OWNER_LC }}
+      BUILD_IMAGE: ${{ needs.set-envs.outputs.BUILD_IMAGE }}
       NIGHTLY: ${{ needs.set-envs.outputs.NIGHTLY }}
       OFFICIAL: ${{ needs.set-envs.outputs.OFFICIAL }}
       OTA_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.ota_channel != 'disabled' && inputs.ota_channel || '' }}
