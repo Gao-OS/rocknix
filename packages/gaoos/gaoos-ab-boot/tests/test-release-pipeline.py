@@ -76,6 +76,8 @@ class ReleasePipeline(unittest.TestCase):
         self.assertIn('\npermissions:\n  contents: read\n  packages: read\n', device)
         for name in ['build-aarch64-toolchain', 'build-aarch64-emu-libretro']:
             self.assert_permission(job(device, name), 'packages', 'read')
+            leaf = (WORKFLOWS / f'{name}.yml').read_text()
+            self.assert_permission(job(leaf, name), 'packages', 'read')
         for path in WORKFLOWS.glob('build-*.yml'):
             content = path.read_text()
             if not ('docker run' in content and '/rocknix-build:latest' in content):

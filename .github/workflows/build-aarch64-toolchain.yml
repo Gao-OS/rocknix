@@ -19,6 +19,7 @@ jobs:
     permissions:
       actions: write
       contents: read
+      packages: read
     env:
       DISTRO: GaoOS
       JAVA_HOME: /usr
