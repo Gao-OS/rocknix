@@ -21,7 +21,7 @@ make_target() {
   # Compile boot.cmd → boot.scr for U-Boot A/B slot selection
   local mkimage_tool="${TOOLCHAIN}/bin/mkimage"
   if [ "${DEVICE}" = "RK3566" ]; then
-    mkimage_tool="$(get_build_dir u-boot-Generic)/tools/mkimage"
+    mkimage_tool="${TOOLCHAIN}/bin/rk3566-mkimage"
   fi
   "${mkimage_tool}" -C none -A ${TARGET_KERNEL_ARCH} -T script \
     -d ${PKG_DIR}/boot/boot.cmd ${PKG_BUILD}/boot.scr

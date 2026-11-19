@@ -182,10 +182,15 @@ printf 'DEPS=%s\\n' "$PKG_DEPENDS_TARGET"
             tool.chmod(0o755)
             (td / 'build').mkdir()
             result = shell("""set -e
-DEVICE=RK3566 PKG_DIR=%s PKG_BUILD=%s/build INSTALL=%s/install TARGET_KERNEL_ARCH=arm64 TARGET_ARCH=aarch64
+DEVICE=RK3566 GAOOS_AB_BOOT=yes TARGET_KERNEL_ARCH=arm64 TARGET_ARCH=aarch64
+TOOLCHAIN=%s/toolchain PKG_BUILD=%s/uboot
+. projects/ROCKNIX/devices/RK3566/packages/u-boot-Generic/package.mk
+makeinstall_target
+rm -r "$PKG_BUILD"
+PKG_DIR=%s PKG_BUILD=%s/build INSTALL=%s/install
 get_build_dir() { echo %s/uboot; }
 die() { echo "$*"; exit 1; }
-""" % (PKG, td, td, td)
+""" % (td, td, PKG, td, td, td)
                 + '. packages/gaoos/gaoos-ab-boot/package.mk\n'
                 + function('config/functions', 'enable_service')
                 + '\nmake_target\nmakeinstall_target\npost_install\n')

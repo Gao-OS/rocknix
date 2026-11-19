@@ -45,5 +45,9 @@ make_target() {
 }
 
 makeinstall_target() {
-  : # nothing
+  if [ "${GAOOS_AB_BOOT}" = "yes" ]; then
+    # Keep the host tool available after the U-Boot build directory is removed.
+    mkdir -p "${TOOLCHAIN}/bin"
+    install -m755 "${PKG_BUILD}/tools/mkimage" "${TOOLCHAIN}/bin/rk3566-mkimage"
+  fi
 }
