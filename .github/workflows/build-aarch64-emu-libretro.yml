@@ -175,10 +175,20 @@ jobs:
         run: df -h
 
       - name: Compress directory
-        run: | 
+        shell: bash
+        run: |
+          build="./build.GaoOS-$DEVICE.aarch64"
+          boot_artifacts=()
+          if [[ "$DEVICE" == RK3566 ]]; then
+            if [[ ! -s "$build/initramfs/init" || ! -s "$build/initramfs/usr/bin/busybox" ]]; then
+              echo 'Missing staged RK3566 initramfs for image assembly' >&2
+              exit 1
+            fi
+            # The final image reuses this archive's kernel and checks its embedded initramfs.
+            boot_artifacts+=("$build/initramfs")
+          fi
           sudo tar --remove-files -cf - \
-          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/install_* \
-          ./build.GaoOS-${{ inputs.DEVICE }}.aarch64/.stamps | split -b 2G -  build.emu-libretro.tar.part
+            "$build"/install_* "$build/.stamps" "${boot_artifacts[@]}" | split -b 2G - build.emu-libretro.tar.part
 
       - uses: actions/upload-artifact@v7
         with:

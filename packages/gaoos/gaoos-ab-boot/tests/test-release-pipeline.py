@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import textwrap
 import unittest
@@ -217,6 +218,43 @@ class ReleasePipeline(unittest.TestCase):
                 self.assertTrue(re.search(r'^      DISTRO: GaoOS$', source, re.M), path.name + ' missing DISTRO=GaoOS')
                 self.assertNotIn('build.ROCKNIX-', source)
                 self.assertNotIn('target/ROCKNIX-', source)
+
+    def test_libretro_archive_transfers_rk3566_staged_initramfs(self):
+        workflow = (WORKFLOWS / 'build-aarch64-emu-libretro.yml').read_text()
+        step = workflow.split('      - name: Compress directory\n', 1)[1].split('\n      - ', 1)[0]
+        recipe = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        for device, has_initramfs in [('RK3566', True), ('RK3566', False), ('H700', False)]:
+            with self.subTest(device=device, has_initramfs=has_initramfs), tempfile.TemporaryDirectory() as td:
+                work = Path(td)
+                commands = work / 'bin'
+                commands.mkdir()
+                sudo = commands / 'sudo'
+                sudo.write_text('#!/bin/bash\n[[ "$1" == tar && "$2" == --remove-files ]] || exit 1\n'
+                                'shift 2\nexec tar "$@"\n')
+                sudo.chmod(0o755)
+                build = f'build.GaoOS-{device}.aarch64'
+                kernel = f'{build}/install_pkg/linux/.image/Image'
+                assets = [f'{build}/initramfs/init', f'{build}/initramfs/usr/bin/busybox',
+                          f'{build}/initramfs/usr/lib/boot-helper']
+                for filename in [kernel, f'{build}/.stamps/linux/build_target',
+                                 *(assets if has_initramfs else [])]:
+                    file = work / filename
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    file.write_bytes(filename.encode())
+                env = {**os.environ, 'DEVICE': device, 'PATH': str(commands) + os.pathsep + os.environ['PATH']}
+                result = subprocess.run(
+                    ['bash', '-eo', 'pipefail', '-c', recipe],
+                    cwd=work, env=env, capture_output=True, text=True)
+                if device == 'RK3566' and not has_initramfs:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('Missing staged RK3566 initramfs', result.stderr)
+                    self.assertEqual(list(work.glob('build.emu-libretro.tar.part*')), [])
+                    continue
+                self.assertEqual(result.returncode, 0, result.stderr)
+                with tarfile.open(work / 'build.emu-libretro.tar.partaa') as archive:
+                    for filename in [kernel, *(assets if has_initramfs else [])]:
+                        with archive.extractfile('./' + filename) as artifact:
+                            self.assertEqual(artifact.read(), filename.encode())
 
     def test_ota_artifact_upload_contains_raw_payload(self):
         source = (WORKFLOWS / 'build-aarch64-image.yml').read_text()
