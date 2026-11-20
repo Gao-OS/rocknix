@@ -21,7 +21,8 @@ DATA_MARKER = b'# START OF DATA - DO NOT MODIFY\n'
 VERSION = re.compile(rb'[a-zA-Z0-9][a-zA-Z0-9._+-]{0,95}\n')
 REPLACED = (b'etc/gaoos-version', b'etc/gaoos-ota-sequence', b'etc/os-release')
 MARKER = b'etc/gaoos-ota-qualification'
-FAIL_BOOT_UNIT = b'etc/systemd/system/rocknix-autostart.service'
+FAIL_BOOT_DIR = b'etc/systemd/system'
+FAIL_BOOT_UNIT = FAIL_BOOT_DIR + b'/rocknix-autostart.service'
 
 
 def run(*argv):
@@ -97,10 +98,14 @@ def write_pseudo(source, target, replacements, fail_boot):
 
         modified = []
         additions = bytearray()
+        has_fail_boot_dir = False
         for line in header[:-3]:
             path, _, detail = line.partition(b' ')
             if path == MARKER:
                 raise ValueError('Factory image already contains a qualification marker')
+            if fail_boot and path == FAIL_BOOT_DIR and not detail.startswith(b'x '):
+                image_validation.require(detail.startswith(b'D '), 'Factory systemd override path is not a directory')
+                has_fail_boot_dir = True
             if fail_boot and path == FAIL_BOOT_UNIT:
                 raise ValueError('Factory image already overrides the required autostart unit')
             if path in REPLACED and detail.startswith(b'R '):
@@ -119,6 +124,8 @@ def write_pseudo(source, target, replacements, fail_boot):
         marker = replacements[MARKER]
         modified.append(b' '.join([MARKER, b'R 0 644 0 0', str(len(marker)).encode(),
                                    str(offset + len(additions)).encode(), b'0']) + b'\n')
+        if fail_boot and not has_fail_boot_dir:
+            modified.append(FAIL_BOOT_DIR + b' D 0 755 0 0\n')
         output.writelines([*modified, *header[-3:]])
         shutil.copyfileobj(original, output, length=image_validation.CHUNK)
         output.write(additions + marker)

@@ -23,7 +23,7 @@ class Qualification(unittest.TestCase):
         self.work = Path(directory.name)
         root = self.work / 'root'
         (root / 'etc').mkdir(parents=True)
-        (root / 'etc/systemd/system').mkdir(parents=True)
+        (root / 'etc/systemd').mkdir()
         (root / 'usr/bin').mkdir(parents=True)
         (root / 'usr/lib/systemd/system').mkdir(parents=True)
         (root / 'etc/gaoos-version').write_bytes(b'20261120\n')
@@ -101,6 +101,7 @@ class Qualification(unittest.TestCase):
         self.assertIn(b'/' + qualify.FAIL_BOOT_UNIT + b' -> /dev/null',
                       qualify.run('unsquashfs', '-lln', failure, target))
         healthy_files = qualify.run('unsquashfs', '-lln', healthy)
+        self.assertNotIn(b'/etc/systemd/system\n', healthy_files)
         self.assertNotIn(b'/' + qualify.FAIL_BOOT_UNIT, healthy_files)
         service = 'usr/lib/systemd/system/rocknix-autostart.service'
         self.assertEqual(qualify.run('unsquashfs', '-cat', failure, service),
