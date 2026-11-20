@@ -111,6 +111,13 @@ fi
 ''')
         self.executable("mount", "#!/bin/bash\nexit 0\n")
         self.executable("mountpoint", "#!/bin/bash\nexit 0\n")
+        self.executable("xargs", """#!/bin/bash
+if [ "$#" -eq 0 ]; then
+  printf 'xargs: echo: No such file or directory\\n' >&2
+  exit 127
+fi
+exec "$REAL_XARGS" "$@"
+""")
         self.executable("reboot", '#!/bin/bash\ntouch "$TEST_ROOT/rebooted"\n')
         self.executable("sleep", "#!/bin/bash\nexit 0\n")
         self.executable("systemctl", '''#!/bin/bash
@@ -180,6 +187,7 @@ target.write_bytes(pathlib.Path(os.environ['TEST_ROOT'], 'reconstructed').read_b
                         TEST_ROOT=str(self.root),
                         REAL_DD=shutil.which("gdd") or shutil.which("dd"),
                         REAL_STAT=shutil.which("gstat") or shutil.which("stat"),
+                        REAL_XARGS=shutil.which("xargs"),
                         REAL_READLINK=shutil.which("readlink"),
                         REAL_MV=shutil.which("mv"), REAL_CAT=shutil.which("cat"))
 

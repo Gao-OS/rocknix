@@ -232,6 +232,10 @@ verify_checksum() {
   [ "${actual}" = "${expected}" ] || die "Checksum mismatch: ${image}"
 }
 
+squashfs_version() {
+  od -An -tu2 -j28 -N4 "$1" | awk '{print $1, $2}'
+}
+
 slot_status() {
   local field="status_$1"
   printf '%s\n' "${!field}"
@@ -321,7 +325,7 @@ cmd_apply() (
     # and its partition padding is not part of the original SquashFS payload.
     local source_bytes source_size source_capacity source_format delta_dir
     [ "$(head -c 4 "${source_part}")" = "hsqs" ] || die "Invalid source SquashFS magic"
-    source_format=$(od -An -tu2 -j28 -N4 "${source_part}" | xargs) || die "Cannot read source SquashFS version"
+    source_format=$(squashfs_version "${source_part}") || die "Cannot read source SquashFS version"
     [ "${source_format}" = "4 0" ] || die "Unsupported source SquashFS version"
     source_bytes=$(od -An -tu8 -j40 -N8 "${source_part}" | tr -d '[:space:]') || die "Cannot read source SquashFS size"
     source_capacity=$(blockdev --getsize64 "${source_part}") || die "Cannot read running slot capacity"
@@ -348,7 +352,7 @@ cmd_apply() (
   target_capacity=$(blockdev --getsize64 "${target_part}") || die "Cannot read inactive slot capacity"
   [ "${image_size}" -ge 96 ] && [ "${image_size}" -le "${target_capacity}" ] || die "Image exceeds slot capacity or is too small"
   [ "$(head -c 4 "${image}" | tr -d '\000')" = "hsqs" ] || die "Invalid SquashFS magic"
-  format=$(od -An -tu2 -j28 -N4 "${image}" | xargs) || die "Cannot read SquashFS version"
+  format=$(squashfs_version "${image}") || die "Cannot read SquashFS version"
   [ "${format}" = "4 0" ] || die "Unsupported SquashFS version"
   used_bytes=$(od -An -tu8 -j40 -N8 "${image}" | tr -d '[:space:]') || die "Cannot read SquashFS size"
   [[ "${used_bytes}" =~ ^[1-9][0-9]{0,15}$ ]] && [ "${used_bytes}" -ge 96 ] &&
